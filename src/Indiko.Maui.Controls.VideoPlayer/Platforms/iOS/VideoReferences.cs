@@ -31,7 +31,7 @@ public static class VideoReferences
 
         try
         {
-            var data = url.CreateBookmarkData(NSUrlBookmarkCreationOptions.None, [], null, out var error);
+            var data = url.CreateBookmarkData(default, [], null, out var error);
 
             return error is null && data is not null
                 ? data.GetBase64EncodedString(NSDataBase64EncodingOptions.None)

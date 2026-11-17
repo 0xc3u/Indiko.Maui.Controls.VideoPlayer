@@ -2,6 +2,15 @@
 
 	<PropertyGroup>
 		<TargetFrameworks>net10.0-android;net10.0-ios</TargetFrameworks>
+		<!-- Local iOS builds: -p:IndikoIosSdk26=true pins the TFM to net10.0-ios26.0,
+		     which selects the Microsoft.iOS.Sdk 26.0 pack and so Xcode 26.0 instead of the
+		     27.1 the installed workload otherwise demands. The iOS SDK pins an exact Xcode
+		     major.minor and a newer Xcode does not satisfy it. Opt-in, so CI keeps building
+		     plain net10.0-ios. ValidateXcodeVersion=false is never the answer: it only moves
+		     the failure into the trimmer. Build with:
+		       export DEVELOPER_DIR=/Applications/Xcode-26.0.0.app/Contents/Developer
+		       dotnet build ... -p:IndikoIosSdk26=true -f net10.0-ios26.0 -->
+		<TargetFrameworks Condition="'$(IndikoIosSdk26)' == 'true'">net10.0-android;net10.0-ios26.0</TargetFrameworks>
 		<UseMaui>true</UseMaui>
 		<SingleProject>true</SingleProject>
 		<ImplicitUsings>enable</ImplicitUsings>

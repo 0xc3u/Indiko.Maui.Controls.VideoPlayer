@@ -216,6 +216,13 @@ public class VideoPlayerViewHandler
         var videoTrack = composition.AddMutableTrack(AVMediaTypes.Video.GetConstant()!, 0);
         var audioTrack = composition.AddMutableTrack(AVMediaTypes.Audio.GetConstant()!, 0);
 
+        if (videoTrack is null)
+        {
+            Report?.OnMediaFailed(
+                VideoErrorCode.Unknown, -1, "The composition could not take a video track.");
+            return;
+        }
+
         var durations = new List<TimeSpan>(source.Clips.Count);
         var cursor = CMTime.Zero;
         var transformTaken = false;
@@ -253,7 +260,7 @@ public class VideoPlayerViewHandler
             if (generation != _generation)
                 return;
 
-            if (videoTracks is null || videoTracks.Length == 0)
+            if (videoTracks is null || videoTracks.Count == 0)
             {
                 Report?.OnMediaFailed(
                     VideoErrorCode.UnsupportedFormat, chapter, "The clip has no video track.");
@@ -263,7 +270,7 @@ public class VideoPlayerViewHandler
             var sourceVideo = videoTracks[0];
             var range = sourceVideo.TimeRange;
 
-            videoTrack?.InsertTimeRange(range, sourceVideo, cursor, out var videoError);
+            videoTrack.InsertTimeRange(range, sourceVideo, cursor, out var videoError);
             if (videoError is not null)
             {
                 Report?.OnMediaFailed(
@@ -277,10 +284,10 @@ public class VideoPlayerViewHandler
                 .LoadTracksWithMediaTypeAsync(AVMediaTypes.Audio.GetConstant()!)
                 .ConfigureAwait(true);
 
-            if (audioTracks is { Length: > 0 })
+            if (audioTracks is not null && audioTracks.Count > 0)
                 audioTrack?.InsertTimeRange(range, audioTracks[0], cursor, out _);
 
-            if (!transformTaken && videoTrack is not null)
+            if (!transformTaken)
             {
                 // Rotation lives in the track's transform, not in the pixels. A
                 // composition starts with the identity transform, so footage
@@ -304,7 +311,7 @@ public class VideoPlayerViewHandler
         {
             // Spectral keeps the pitch where it belongs when the rate changes,
             // so audio at 0.25x is still recognisable rather than a growl.
-            AudioTimePitchAlgorithm = AVAudioTimePitchAlgorithm.Spectral.GetConstant()!,
+            AudioTimePitchAlgorithm = AVAudioTimePitchAlgorithm.Spectral,
         };
 
         _item = item;

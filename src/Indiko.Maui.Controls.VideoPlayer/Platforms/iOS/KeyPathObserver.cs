@@ -38,9 +38,10 @@ internal sealed class KeyPathObserver : NSObject
         {
             _target.RemoveObserver(this, (NSString)_keyPath);
         }
-        catch (MonoTouchException)
+        catch (ObjCRuntime.ObjCException)
         {
-            // The observer was already gone; nothing left to detach.
+            // Removing an observer that is no longer registered raises an
+            // Objective-C exception rather than returning; nothing left to do.
         }
 
         _target = null;

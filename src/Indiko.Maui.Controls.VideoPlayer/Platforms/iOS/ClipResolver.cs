@@ -110,8 +110,9 @@ internal static class ClipResolver
 
     private static string? TryCreateBookmark(NSUrl url)
     {
-        var data = url.CreateBookmarkData(
-            NSUrlBookmarkCreationOptions.None, [], null, out var error);
+        // No option flags: WithSecurityScope is a macOS concept, and on iOS a
+        // bookmark to a document-picker URL is security-scoped by default.
+        var data = url.CreateBookmarkData(default, [], null, out var error);
 
         return error is null && data is not null ? data.GetBase64EncodedString(NSDataBase64EncodingOptions.None) : null;
     }
@@ -133,7 +134,7 @@ internal static class ClipResolver
         }
 
         var assets = PHAsset.FetchAssetsUsingLocalIdentifiers([localIdentifier], null);
-        if (assets.FirstObject() is not PHAsset asset)
+        if (assets.FirstObject is not PHAsset asset)
         {
             // Also the "limited access" case where this particular asset was
             // never shared with the app: indistinguishable from deleted, and the
@@ -153,7 +154,15 @@ internal static class ClipResolver
         };
 
         if (allowNetworkAccess)
-            options.ProgressHandler = (progress, _, _, _) => onDownloadProgress(progress);
+        {
+            // The third parameter is an out bool the handler sets to stop the
+            // download; cancellation here goes through the request id instead.
+            options.ProgressHandler = (double progress, NSError? _, out bool stop, NSDictionary? _) =>
+            {
+                stop = false;
+                onDownloadProgress(progress);
+            };
+        }
 
         var completion = new TaskCompletionSource<ClipResolution>(
             TaskCreationOptions.RunContinuationsAsynchronously);
