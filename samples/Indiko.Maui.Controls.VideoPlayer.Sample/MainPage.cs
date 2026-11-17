@@ -1,4 +1,5 @@
 using Indiko.Maui.Controls.VideoPlayer.Models;
+using Indiko.Maui.Controls.VideoPlayer.Sample.Services;
 using Indiko.Maui.Controls.VideoPlayer.Timeline;
 
 namespace Indiko.Maui.Controls.VideoPlayer.Sample;
@@ -30,6 +31,8 @@ public class MainPage : ContentPage
     private readonly Entry _seekEntry;
 
     private readonly Queue<DateTime> _eventTimes = new();
+    private readonly IVideoPicker _picker = VideoPickerFactory.Create();
+    private readonly Label _picked = Readout();
     private bool _scrubbing;
 
     public MainPage()
@@ -50,7 +53,12 @@ public class MainPage : ContentPage
         _player.StateChanged += OnStateChanged;
         _player.PlaybackEnded += (_, _) => _error.Text = "playback ended";
         _player.BookmarkRefreshed += (_, e) =>
-            _error.Text = $"bookmark renewed for chapter {e.ChapterIndex}";
+        {
+            // The renewed value has to replace the stored one, or the renewal
+            // repeats on every open until the bookmark finally fails.
+            PickedClipStore.Replace(e.ChapterIndex, e.NewBookmark);
+            _error.Text = $"bookmark renewed and stored for chapter {e.ChapterIndex}";
+        };
         _player.DownloadProgress += (_, e) =>
             _error.Text = $"iCloud download {e.Progress:P0}";
 
@@ -84,6 +92,16 @@ public class MainPage : ContentPage
                     Row(
                         Button("Bundled chapters", LoadBundledChaptersAsync),
                         Button("Single clip", LoadSingleBundledClipAsync)),
+
+                    Section("Pick by reference"),
+                    Row(
+                        Button(_picker.Labels.Photos, () => PickAsync(fromPhotos: true)),
+                        Button(_picker.Labels.Files, () => PickAsync(fromPhotos: false))),
+                    Row(
+                        Button("Copy clip to Files", CopyToDocumentsAsync),
+                        Button("Replay saved", ReplaySavedAsync),
+                        Button("Forget saved", () => { PickedClipStore.Clear(); _picked.Text = "saved references cleared"; return Task.CompletedTask; })),
+                    _picked,
                     Row(
                         Button("Missing file", () => { _player.Source = VideoPlayerSource.FromFile("/does/not/exist.mp4"); return Task.CompletedTask; }),
                         Button("Unsupported kind", () => { _player.Source = VideoPlayerSource.FromClip(VideoClip.FromPhotoAsset("no-such-asset")); return Task.CompletedTask; }),
@@ -162,6 +180,63 @@ public class MainPage : ContentPage
     {
         _error.Text = "single clip";
         _player.Source = VideoPlayerSource.FromFile(await EnsureCachedAsync(BundledChapters[0]));
+    }
+
+    // The document picker can only pick what the Files app can see. On iOS the
+    // app's Documents folder shows up there once the two sharing keys are set,
+    // so this puts a clip where the picker can reach it.
+    private async Task CopyToDocumentsAsync()
+    {
+        var documents = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+        var target = Path.Combine(documents, BundledChapters[0]);
+
+        if (!File.Exists(target))
+        {
+            await using var source = await FileSystem.OpenAppPackageFileAsync(BundledChapters[0]);
+            await using var destination = File.Create(target);
+            await source.CopyToAsync(destination);
+        }
+
+        _picked.Text = $"{BundledChapters[0]} is in the app's Documents folder";
+    }
+
+    private async Task PickAsync(bool fromPhotos)
+    {
+        var picked = fromPhotos
+            ? await _picker.PickFromPhotosAsync()
+            : await _picker.PickFromFilesAsync();
+
+        if (picked.Count == 0)
+        {
+            _picked.Text = "nothing picked";
+            return;
+        }
+
+        PickedClipStore.Save(picked);
+        Apply(picked, "picked");
+    }
+
+    // The button that matters: the references were stored in a previous run,
+    // and this replays them without picking anything. A path would be dead by
+    // now; a bookmark or a persisted URI is not.
+    private Task ReplaySavedAsync()
+    {
+        var saved = PickedClipStore.Load();
+
+        if (saved.Count == 0)
+        {
+            _picked.Text = "nothing saved yet";
+            return Task.CompletedTask;
+        }
+
+        Apply(saved, "replayed from storage");
+        return Task.CompletedTask;
+    }
+
+    private void Apply(IReadOnlyList<PickedClip> clips, string what)
+    {
+        _picked.Text = $"{what}: {string.Join(", ", clips.Select(c => $"{c.Label} [{c.Kind}]"))}";
+        _player.Source = VideoPlayerSource.FromChapters(clips.Select(c => c.ToClip()));
     }
 
     private Task SetSpeed(double speed)

@@ -120,6 +120,16 @@ Without it the grant dies with the activity: the clip plays now and reports
 `PermissionLost` after the next app start. The system caps how many grants an
 app may hold, so release the ones you no longer need.
 
+Measured on API 36: grants from **both** the photo picker and the storage
+access framework can be persisted, and both still play after a cold restart.
+Older versions and third-party providers may refuse, so check the return value
+rather than assuming it.
+
+One difference worth knowing if you group chapters by file name: a URI from the
+storage access framework reports the real name (`GH010001.MP4`), while the
+photo picker reports a MediaStore name (`23.mp4`). The original is not
+available through that route.
+
 **The package contributes no Android permission and no service.** It needs
 neither `READ_MEDIA_VIDEO` nor `READ_EXTERNAL_STORAGE`; the picker and the
 storage access framework hand back a readable URI without them. Check your

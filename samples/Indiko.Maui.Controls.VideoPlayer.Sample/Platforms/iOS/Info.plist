@@ -23,6 +23,15 @@
 	  Needed only for picking from the photo library. The package itself
 	  requests no authorisation; it checks what the app already has.
 	-->
+	<!--
+	     So the document picker has something to pick: the sample copies a test
+	     clip into its Documents folder, and these two keys are what make that
+	     folder visible under "On My iPhone" in the Files app.
+	-->
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Pick a video from your library to play it in the sample.</string>
 </dict>
