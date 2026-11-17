@@ -92,10 +92,17 @@ public partial class VideoPlayerViewHandler
 
         _ticker = new Handler(Looper.MainLooper!);
         _tick = OnTick;
+
+        // Leaving the app pauses, and nothing resumes by itself: the control
+        // runs no media session and no foreground service, so continuing would
+        // be audio the user cannot see or stop.
+        Microsoft.Maui.ApplicationModel.Platform.ActivityStateChanged += OnActivityStateChanged;
     }
 
     protected override void DisconnectHandler(PlayerView platformView)
     {
+        Microsoft.Maui.ApplicationModel.Platform.ActivityStateChanged -= OnActivityStateChanged;
+
         StopTicker();
 
         _seeks.CancelPending();
@@ -121,6 +128,16 @@ public partial class VideoPlayerViewHandler
         _timeline = null;
 
         base.DisconnectHandler(platformView);
+    }
+
+    private void OnActivityStateChanged(
+        object? sender, Microsoft.Maui.ApplicationModel.ActivityStateChangedEventArgs e)
+    {
+        if (e.State == Microsoft.Maui.ApplicationModel.ActivityState.Paused
+            && VirtualView?.PauseWhenInBackground == true)
+        {
+            _player?.Pause();
+        }
     }
 
     private static void MapSource(VideoPlayerViewHandler handler, VideoPlayerView view) =>

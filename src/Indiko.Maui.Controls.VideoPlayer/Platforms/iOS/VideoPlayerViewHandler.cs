@@ -4,6 +4,7 @@ using Foundation;
 using Indiko.Maui.Controls.VideoPlayer.Models;
 using Indiko.Maui.Controls.VideoPlayer.Timeline;
 using Microsoft.Maui.Handlers;
+using UIKit;
 using Size = Microsoft.Maui.Graphics.Size;
 
 namespace Indiko.Maui.Controls.VideoPlayer.Platforms.iOS;
@@ -38,6 +39,7 @@ public class VideoPlayerViewHandler
     private AVPlayerItem? _item;
     private NSObject? _timeObserver;
     private NSObject? _endObserver;
+    private NSObject? _resignObserver;
     private KeyPathObserver? _statusObserver;
     private KeyPathObserver? _timeControlObserver;
     private CancellationTokenSource? _loading;
@@ -72,6 +74,17 @@ public class VideoPlayerViewHandler
         // decides how much of it the app actually hears about.
         _timeObserver = _player.AddPeriodicTimeObserver(
             new CMTime(1, 30), CoreFoundation.DispatchQueue.MainQueue, OnTimeObserved);
+
+        // Leaving the app pauses, and nothing resumes by itself: the control
+        // runs no background audio session and no now-playing entry, so
+        // continuing would be audio the user cannot see or stop.
+        _resignObserver = NSNotificationCenter.DefaultCenter.AddObserver(
+            UIApplication.WillResignActiveNotification,
+            _ =>
+            {
+                if (VirtualView?.PauseWhenInBackground == true)
+                    _player?.Pause();
+            });
     }
 
     protected override void DisconnectHandler(PlayerContainerView platformView)
@@ -93,6 +106,13 @@ public class VideoPlayerViewHandler
 
             player.Pause();
             player.ReplaceCurrentItemWithPlayerItem(null);
+        }
+
+        if (_resignObserver is not null)
+        {
+            NSNotificationCenter.DefaultCenter.RemoveObserver(_resignObserver);
+            _resignObserver.Dispose();
+            _resignObserver = null;
         }
 
         _timeControlObserver?.Stop();

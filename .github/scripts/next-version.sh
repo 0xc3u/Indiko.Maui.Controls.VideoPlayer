@@ -56,13 +56,21 @@ previous_tag() {
 # calculation nobody has reproduced is a guess with a shell around it.
 PREVIOUS="${PREV_TAG:-$(previous_tag || true)}"
 
+# The first release of this package is 1.0.0, not the 0.1.0 that counting up
+# from 0.0.0 would give. That is a decision about what the version promises,
+# not about how much changed: the API is the one consumers bind to, and a 0.x
+# number tells them to expect it to move under them. Forcing it with a fake
+# BREAKING CHANGE marker on an initial commit would work too, and would leave
+# a lie in the changelog.
+FIRST_RELEASE_VERSION="1.0.0"
+
 if [[ -z "$PREVIOUS" ]]; then
-    # A repository with no version tag yet starts the history at 0.0.0, so the
-    # first feat produces 0.1.0 and the first fix 0.0.1.
     PREVIOUS="${TAG_PREFIX}0.0.0"
     RANGE=""
+    IS_FIRST_RELEASE=true
 else
     RANGE="${PREVIOUS}..${HEAD_REF:-HEAD}"
+    IS_FIRST_RELEASE=false
 fi
 
 REPO="${GITHUB_REPOSITORY:-$(git remote get-url origin 2>/dev/null \
@@ -141,6 +149,14 @@ case "$BUMP" in
 esac
 
 VERSION="${MAJOR}.${MINOR}.${PATCH}"
+
+# Whatever the commits since the start of history add up to, the first release
+# carries the version above. The bump still decides *whether* there is one: a
+# branch of nothing but chore commits releases nothing, first time or not.
+if $IS_FIRST_RELEASE && [[ "$BUMP" != "none" ]]; then
+    VERSION="$FIRST_RELEASE_VERSION"
+fi
+
 TAG="${TAG_PREFIX}${VERSION}"
 RELEASE_NEEDED=true
 [[ "$BUMP" == "none" ]] && RELEASE_NEEDED=false
