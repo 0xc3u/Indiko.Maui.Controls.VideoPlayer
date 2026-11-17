@@ -1,0 +1,80 @@
+namespace Indiko.Maui.Controls.VideoPlayer.Timeline;
+
+/// <summary>
+/// Converts between positions and frame numbers, and works out where to seek
+/// for a frame-by-frame step.
+/// </summary>
+public static class FrameMath
+{
+    /// <summary>
+    /// Frame rate assumed when the container does not report one. Variable
+    /// frame rate material has no single answer, so stepping through it is
+    /// approximate by nature.
+    /// </summary>
+    public const double FallbackFrameRate = 30d;
+
+    // A frame boundary at a rate like 29.97 is not representable in ticks, so a
+    // position computed as "frame 300" can arrive a few ticks below the real
+    // boundary and read as frame 299. A thousandth of a frame absorbs that
+    // without being large enough to pull a position into its neighbour: the
+    // step targets below sit half a frame from either boundary, which is three
+    // orders of magnitude outside this tolerance.
+    private const double BoundaryTolerance = 0.001;
+
+    /// <summary>The frame rate to calculate with: the reported one, or the fallback.</summary>
+    public static double EffectiveFrameRate(double frameRate) =>
+        double.IsFinite(frameRate) && frameRate > 0 ? frameRate : FallbackFrameRate;
+
+    /// <summary>How long a single frame lasts at this frame rate.</summary>
+    public static TimeSpan FrameDuration(double frameRate) =>
+        TimeSpan.FromTicks((long)Math.Round(TimeSpan.TicksPerSecond / EffectiveFrameRate(frameRate)));
+
+    /// <summary>
+    /// The zero-based number of the frame on screen at this position. Frame
+    /// <c>n</c> covers <c>[n / fps, (n + 1) / fps)</c>.
+    /// </summary>
+    public static long FrameIndexAt(TimeSpan position, double frameRate)
+    {
+        if (position <= TimeSpan.Zero)
+            return 0;
+
+        var frameTicks = (double)FrameDuration(frameRate).Ticks;
+        return (long)Math.Floor(position.Ticks / frameTicks + BoundaryTolerance);
+    }
+
+    /// <summary>
+    /// Where to seek so that the frame <paramref name="frames"/> away from the
+    /// one at <paramref name="position"/> is shown.
+    /// </summary>
+    /// <remarks>
+    /// The target is the middle of the wanted frame, never its boundary. A seek
+    /// to a boundary is a coin flip: decoder and container rounding decide
+    /// whether it resolves to the frame starting there or the one ending there,
+    /// and a stepping control that lands on boundaries will sometimes show the
+    /// same picture twice and sometimes skip one. From the middle, repeated
+    /// steps are exact and reversible.
+    /// </remarks>
+    /// <param name="duration">
+    /// Total length of the media. The result stays a full frame short of it,
+    /// because the instant at <paramref name="duration"/> is past the last
+    /// frame and seeking there ends playback instead of showing a picture.
+    /// </param>
+    public static TimeSpan StepTarget(TimeSpan position, double frameRate, int frames, TimeSpan duration)
+    {
+        var frame = FrameDuration(frameRate);
+        var index = FrameIndexAt(position, frameRate) + frames;
+
+        // Stepping back past the beginning means the beginning, not half a
+        // frame into it: position zero already shows frame zero.
+        if (index < 0)
+            return TimeSpan.Zero;
+
+        var target = TimeSpan.FromTicks((long)Math.Round((index + 0.5) * frame.Ticks));
+
+        var last = duration > frame ? duration - frame : TimeSpan.Zero;
+        if (target > last)
+            target = last;
+
+        return target < TimeSpan.Zero ? TimeSpan.Zero : target;
+    }
+}
