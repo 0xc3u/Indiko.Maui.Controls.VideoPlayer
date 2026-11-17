@@ -16,3 +16,7 @@ test-videos/
 # Local NuGet feed used while developing against an unreleased package
 LocalNuGet/
 nuget.config
+
+# Generated footage bundled into the sample app for simulator runs
+samples/Indiko.Maui.Controls.VideoPlayer.Sample/Resources/Raw/*.MP4
+samples/Indiko.Maui.Controls.VideoPlayer.Sample/Resources/Raw/*.mp4

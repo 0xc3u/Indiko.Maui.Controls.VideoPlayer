@@ -44,6 +44,13 @@ public partial class VideoPlayerViewHandler
     private double _frameRate;
     private bool _isScrubbing;
     private int _currentSeekGeneration;
+
+    // Which frame is on screen, when that is known more precisely than the
+    // player's own position. Media3 reports the position a seek asked for, and
+    // with AtOrAfter semantics that sits half a frame below the frame it then
+    // shows. Deriving the next step from it would compute the same target again
+    // and the picture would stop advancing.
+    private long? _displayedFrame;
     private TimeSpan _scrubTarget;
     private int _generation;
 
@@ -170,6 +177,7 @@ public partial class VideoPlayerViewHandler
         player.Stop();
         player.ClearMediaItems();
         _timeline = null;
+        _displayedFrame = null;
         _throttle.Reset();
 
         if (source is null)
@@ -306,6 +314,7 @@ public partial class VideoPlayerViewHandler
         if (_player is not { } player)
             return;
 
+        _displayedFrame = null;
         player.SetPlaybackSpeed((float)ValueClamp.Speed(VirtualView.Speed));
         player.Play();
         StartTicker();
@@ -320,6 +329,7 @@ public partial class VideoPlayerViewHandler
 
         player.Pause();
         player.SeekTo(0);
+        _displayedFrame = 0;
         ReportPosition(TimeSpan.Zero, force: true);
     }
 
@@ -327,6 +337,8 @@ public partial class VideoPlayerViewHandler
     {
         if (_player is not { } player)
             return false;
+
+        _displayedFrame = null;
 
         var request = _seeks.Begin();
         _currentSeekGeneration = request.Generation;
@@ -352,9 +364,24 @@ public partial class VideoPlayerViewHandler
         player.Pause();
 
         var position = TimeSpan.FromMilliseconds(player.CurrentPosition);
-        var target = FrameMath.StepTarget(position, _frameRate, frames, _timeline.Total);
+        var current = _displayedFrame ?? FrameMath.FrameIndexAt(position, _frameRate);
+        var wanted = Math.Max(0, current + frames);
 
-        return await SeekExactAsync(target, CancellationToken.None).ConfigureAwait(true);
+        var target = FrameMath.SeekTargetForFrame(
+            wanted, _frameRate, _timeline.Total, FrameSeekSemantics.AtOrAfter);
+
+        var reached = await SeekExactAsync(target, CancellationToken.None).ConfigureAwait(true);
+
+        if (!reached)
+            return false;
+
+        _displayedFrame = wanted;
+
+        // Report where the picture is, not where the seek aimed: the two differ
+        // by half a frame here, and an app drawing a frame counter from
+        // Position would otherwise disagree with what the viewer reads on screen.
+        ReportPosition(FrameMath.FrameStartTime(wanted, _frameRate), force: true);
+        return true;
     }
 
     public void BeginScrub()

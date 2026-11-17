@@ -156,4 +156,63 @@ public class FrameMathTests
         Assert.Equal(0, timeline.ToLocal(back).Index);
         Assert.Equal(599, FrameMath.FrameIndexAt(back, 30));
     }
+
+    [Fact]
+    public void An_at_or_after_target_lands_just_short_of_the_wanted_frame()
+    {
+        // Media3 renders the first frame whose timestamp is at or after the
+        // seek position. Aiming at the middle of frame 1351 (45.050 s) there
+        // shows frame 1352, measured on a clip with burnt-in frame numbers, so
+        // the target has to sit below the wanted frame's own timestamp.
+        var duration = TimeSpan.FromSeconds(60);
+        var target = FrameMath.StepTarget(
+            TimeSpan.FromSeconds(45), 30, 1, duration, FrameSeekSemantics.AtOrAfter);
+
+        var wantedFrameStart = TimeSpan.FromSeconds(1351 / 30d);
+        var previousFrameStart = TimeSpan.FromSeconds(1350 / 30d);
+
+        Assert.True(target <= wantedFrameStart, $"{target} must not be past the wanted frame start");
+        Assert.True(target > previousFrameStart, $"{target} must be past the previous frame start");
+    }
+
+    [Fact]
+    public void The_two_semantics_differ_by_exactly_one_frame()
+    {
+        var duration = TimeSpan.FromSeconds(60);
+        var position = TimeSpan.FromSeconds(10);
+
+        var containing = FrameMath.StepTarget(position, 30, 1, duration);
+        var atOrAfter = FrameMath.StepTarget(position, 30, 1, duration, FrameSeekSemantics.AtOrAfter);
+
+        Assert.Equal(FrameMath.FrameDuration(30).Ticks, (containing - atOrAfter).Ticks, 1L);
+    }
+
+    [Fact]
+    public void An_at_or_after_step_is_stable_when_repeated()
+    {
+        // Thirty steps must advance thirty frames, not twenty-nine or
+        // thirty-one: the target of one step is the position of the next.
+        var duration = TimeSpan.FromSeconds(60);
+        var position = TimeSpan.FromSeconds(5);
+        var start = FrameMath.FrameIndexAt(position, 30);
+
+        for (var i = 0; i < 30; i++)
+        {
+            var target = FrameMath.StepTarget(position, 30, 1, duration, FrameSeekSemantics.AtOrAfter);
+
+            // What the player would then report: the frame it actually shows.
+            position = TimeSpan.FromSeconds((FrameMath.FrameIndexAt(target, 30) + 1) / 30d);
+        }
+
+        Assert.Equal(start + 30, FrameMath.FrameIndexAt(position, 30));
+    }
+
+    [Fact]
+    public void An_at_or_after_step_back_at_the_start_stays_at_zero()
+    {
+        var target = FrameMath.StepTarget(
+            TimeSpan.Zero, 30, -1, TimeSpan.FromSeconds(60), FrameSeekSemantics.AtOrAfter);
+
+        Assert.Equal(TimeSpan.Zero, target);
+    }
 }

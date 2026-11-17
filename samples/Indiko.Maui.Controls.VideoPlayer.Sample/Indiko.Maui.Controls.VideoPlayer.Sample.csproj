@@ -1,0 +1,60 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+	<PropertyGroup>
+		<TargetFrameworks>net10.0-android;net10.0-ios</TargetFrameworks>
+		<OutputType>Exe</OutputType>
+		<UseMaui>true</UseMaui>
+		<SingleProject>true</SingleProject>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<Nullable>enable</Nullable>
+
+		<ApplicationTitle>VideoPlayer Sample</ApplicationTitle>
+		<ApplicationId>ch.indiko.videoplayer.sample</ApplicationId>
+		<ApplicationDisplayVersion>1.0</ApplicationDisplayVersion>
+		<ApplicationVersion>1</ApplicationVersion>
+
+		<SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'ios'">15.0</SupportedOSPlatformVersion>
+		<SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android'">30.0</SupportedOSPlatformVersion>
+
+		<IsPackable>false</IsPackable>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<PackageReference Include="Microsoft.Maui.Controls" Version="10.0.110" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<MauiIcon Include="Resources\AppIcon\appicon.svg" />
+		<MauiSplashScreen Include="Resources\Splash\splash.svg" Color="#111111" BaseSize="128,128" />
+	</ItemGroup>
+
+	<!--
+	  Stated explicitly rather than left to the SDK default, which did not pick
+	  this folder up here. The generated chapter set is git-ignored, so the glob
+	  matches nothing until make-test-videos.sh has run with its install-sample
+	  option; the bundled-source buttons report a missing file until then.
+	-->
+	<ItemGroup>
+		<MauiAsset Include="Resources\Raw\**\*" LogicalName="%(RecursiveDir)%(Filename)%(Extension)" />
+	</ItemGroup>
+
+	<!--
+	  A ProjectReference while the package is unreleased. This must become a
+	  PackageReference before the PR, or the sample only builds for someone who
+	  has this repository checked out next to it.
+	-->
+	<ItemGroup>
+		<ProjectReference Include="..\..\src\Indiko.Maui.Controls.VideoPlayer\Indiko.Maui.Controls.VideoPlayer.csproj" />
+	</ItemGroup>
+
+	<!--
+	  Not used by the sample's UI. It is here as a build proof: the app that
+	  drove this package also consumes Indiko.Maui.Controls.MapBox, and the two
+	  packages' AndroidX graphs have to resolve together. A conflict should
+	  surface in this repository's own build rather than in a consuming app.
+	-->
+	<ItemGroup>
+		<PackageReference Include="Indiko.Maui.Controls.MapBox" Version="1.15.0" />
+	</ItemGroup>
+
+</Project>

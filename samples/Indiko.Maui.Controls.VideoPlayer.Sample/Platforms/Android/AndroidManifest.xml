@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+	<!--
+	  No media or storage permissions on purpose. The photo picker and the
+	  storage access framework hand back a readable URI without any, and
+	  declaring READ_MEDIA_VIDEO would make every consuming app answer Google
+	  Play's photo and video permissions declaration. The package itself
+	  contributes no permission either; check the merged manifest to confirm.
+	-->
+	<application android:allowBackup="true" android:supportsRtl="true"></application>
+	<uses-permission android:name="android.permission.INTERNET" />
+</manifest>

@@ -44,32 +44,75 @@ public static class FrameMath
 
     /// <summary>
     /// Where to seek so that the frame <paramref name="frames"/> away from the
-    /// one at <paramref name="position"/> is shown.
+    /// one at <paramref name="position"/> is actually shown.
     /// </summary>
     /// <remarks>
-    /// The target is the middle of the wanted frame, never its boundary. A seek
-    /// to a boundary is a coin flip: decoder and container rounding decide
-    /// whether it resolves to the frame starting there or the one ending there,
-    /// and a stepping control that lands on boundaries will sometimes show the
-    /// same picture twice and sometimes skip one. From the middle, repeated
-    /// steps are exact and reversible.
+    /// Never the frame boundary itself: a seek landing exactly on one is a coin
+    /// flip once decoder and container rounding have their say, and a stepping
+    /// control that lands on boundaries shows some frames twice and skips
+    /// others. Which side of the boundary to aim for depends on the platform,
+    /// hence <paramref name="semantics"/>.
     /// </remarks>
     /// <param name="duration">
     /// Total length of the media. The result stays a full frame short of it,
     /// because the instant at <paramref name="duration"/> is past the last
     /// frame and seeking there ends playback instead of showing a picture.
     /// </param>
-    public static TimeSpan StepTarget(TimeSpan position, double frameRate, int frames, TimeSpan duration)
+    public static TimeSpan StepTarget(
+        TimeSpan position,
+        double frameRate,
+        int frames,
+        TimeSpan duration,
+        FrameSeekSemantics semantics = FrameSeekSemantics.Containing) =>
+        SeekTargetForFrame(FrameIndexAt(position, frameRate) + frames, frameRate, duration, semantics);
+
+    /// <summary>When frame <paramref name="index"/> begins.</summary>
+    public static TimeSpan FrameStartTime(long index, double frameRate)
+    {
+        if (index <= 0)
+            return TimeSpan.Zero;
+
+        return TimeSpan.FromTicks((long)Math.Round(index * (double)FrameDuration(frameRate).Ticks));
+    }
+
+    /// <summary>
+    /// Where to seek so that frame <paramref name="index"/> is the one on
+    /// screen, for a player following <paramref name="semantics"/>.
+    /// </summary>
+    /// <remarks>
+    /// Never the frame boundary itself: a seek landing exactly on one is a coin
+    /// flip once decoder and container rounding have had their say, and a
+    /// stepping control that lands on boundaries shows some frames twice and
+    /// skips others. Which side of the boundary to aim for is the thing the two
+    /// platforms disagree about.
+    /// </remarks>
+    /// <param name="duration">
+    /// Total length of the media. The result stays a full frame short of it,
+    /// because the instant at <paramref name="duration"/> is past the last
+    /// frame and seeking there ends playback instead of showing a picture.
+    /// </param>
+    public static TimeSpan SeekTargetForFrame(
+        long index,
+        double frameRate,
+        TimeSpan duration,
+        FrameSeekSemantics semantics = FrameSeekSemantics.Containing)
     {
         var frame = FrameDuration(frameRate);
-        var index = FrameIndexAt(position, frameRate) + frames;
 
-        // Stepping back past the beginning means the beginning, not half a
+        // Stepping back past the beginning means the beginning, not part of a
         // frame into it: position zero already shows frame zero.
         if (index < 0)
             return TimeSpan.Zero;
 
-        var target = TimeSpan.FromTicks((long)Math.Round((index + 0.5) * frame.Ticks));
+        // Containing (AVFoundation): the frame shown is the one the position
+        // falls inside, so aim at the middle of the wanted frame.
+        // AtOrAfter (Media3 ExoPlayer): the frame shown is the first one whose
+        // timestamp is at or after the position, so aim just short of the
+        // wanted frame's start, which is the middle of the one before it.
+        // Aiming at the middle of the wanted frame there lands a frame too far,
+        // every time.
+        var offset = semantics == FrameSeekSemantics.Containing ? 0.5 : -0.5;
+        var target = TimeSpan.FromTicks((long)Math.Round((index + offset) * frame.Ticks));
 
         var last = duration > frame ? duration - frame : TimeSpan.Zero;
         if (target > last)
