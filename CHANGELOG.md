@@ -1,3 +1,11 @@
+# [1.1.0](https://github.com/0xc3u/Indiko.Maui.Controls.VideoPlayer/compare/v1.0.0...v1.1.0) (2026-11-17)
+
+### Features
+
+* **sample:** design the sample as an instrument, not a demo ([10c5cc5](https://github.com/0xc3u/Indiko.Maui.Controls.VideoPlayer/commit/10c5cc5f51097e50a3bded66ef2d9ec92d36751d))
+* **sample:** pickers for all four source kinds, and what testing them found ([37aebc6](https://github.com/0xc3u/Indiko.Maui.Controls.VideoPlayer/commit/37aebc6fe7bf7a3aae3f52bb184df047e37d8ad9))
+
+
 # [1.0.0](https://github.com/0xc3u/Indiko.Maui.Controls.VideoPlayer/compare/v0.0.0...v1.0.0) (2026-11-17)
 
 ### Features
