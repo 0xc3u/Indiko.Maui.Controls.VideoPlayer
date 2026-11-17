@@ -1,0 +1,391 @@
+#
+# Build, test, version, tag, release and publish -- in one workflow.
+#
+# Chaining the jobs with `needs` is deliberate: a tag pushed by a workflow does
+# not start another one, so a split "tag here, publish on the tag" pair never
+# publishes without someone dispatching it by hand. The version is computed
+# once, in the release job, and handed down.
+#
+# A merge to main with a feat or fix commit therefore IS a release: tag, GitHub
+# release and NuGet push, no further confirmation.
+#
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - "**.md"
+
+  workflow_dispatch:
+    inputs:
+      republish:
+        description: "Publish an existing version to NuGet again, e.g. 1.0.0. Leave empty to release normally."
+        required: false
+        type: string
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  DOTNET_VERSION: 10.0.100
+
+  # iOS toolchain, pinned in two places that must move together.
+  #
+  # The iOS workload states a MINIMUM Xcode, not an exact one: the 26.0 SDK
+  # builds against Xcode 26.6 locally, so a newer runner Xcode is fine. The
+  # failure is the other direction, and a vanilla `dotnet workload install
+  # maui` walks straight into it -- it pulls the newest Microsoft.iOS.Sdk
+  # (27.x as of 2026-11), which demands an Xcode no 26.x runner image has.
+  #
+  # 26.0.11017 is chosen over a newer line on purpose. The manifest decides the
+  # platform version of the published assets: this one produces
+  # lib/net10.0-ios26.0, matching Indiko.Maui.Controls.MapBox 1.15.0. Pinning
+  # 26.2 instead would ship lib/net10.0-ios26.2 and quietly raise the floor for
+  # every consumer -- an app that builds the two packages side by side would
+  # stop resolving this one.
+  #
+  # Xcode 26.3 is what macos-latest surfaces. Raise both together, and check
+  # what the new manifest does to the lib folder before doing so.
+  XCODE_VERSION: "26.3"
+  IOS_WORKLOAD_MANIFEST: "26.0.11017/10.0.100"
+
+# The run's own token, not a personal access token: the only thing a PAT could
+# do that this cannot -- start another workflow by pushing a tag -- is the
+# thing this workflow is shaped to avoid needing.
+permissions:
+  contents: write
+
+jobs:
+
+  build:
+    name: Build and test
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set Xcode version
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          # Pinned exact rather than latest-stable, so a runner image bump
+          # cannot silently move the build off the Xcode the pinned iOS
+          # workload was published against.
+          xcode-version: ${{ env.XCODE_VERSION }}
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Install MAUI workload (iOS SDK pinned)
+        # A rollback file rather than --skip-manifest-update or a version
+        # argument: the former falls back to the SDK-bundled manifest, which is
+        # older than we want, and a plain install picks the newest, which is
+        # the error this pin exists to prevent. Only iOS is pinned; Android
+        # takes the current manifest.
+        run: |
+          cat > "${RUNNER_TEMP}/ios-workload-rollback.json" <<EOF
+          {
+            "microsoft.net.sdk.ios": "${IOS_WORKLOAD_MANIFEST}"
+          }
+          EOF
+          dotnet workload install maui --from-rollback-file "${RUNNER_TEMP}/ios-workload-rollback.json"
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          # The action defaults to "tools platform-tools"; Google removed the
+          # obsolete "tools" package, which makes sdkmanager exit 1.
+          packages: platform-tools
+
+      # Before the build, because it is the faster signal and needs none of the
+      # workloads: the timeline logic is compiled into the test assembly rather
+      # than referenced, so it runs on a plain net10.0 SDK.
+      - name: Test
+        run: dotnet test tests/Indiko.Maui.Controls.VideoPlayer.Tests -c Release
+
+      - name: Build
+        run: dotnet build src/Indiko.Maui.Controls.VideoPlayer.sln -c Release
+
+  release:
+    name: Version and release
+    runs-on: ubuntu-latest
+    needs: build
+
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      released: ${{ steps.version.outputs.release_needed }}
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The version comes from the tags and the commits since the last one,
+          # so a shallow clone would compute it from nothing.
+          fetch-depth: 0
+
+      - name: Work out the next version
+        id: version
+        env:
+          NOTES_FILE: ${{ runner.temp }}/release-notes.md
+        run: .github/scripts/next-version.sh
+
+      - name: Nothing to release
+        if: steps.version.outputs.release_needed != 'true'
+        run: |
+          echo "No feat, fix or breaking change since ${{ steps.version.outputs.previous }}." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Update the changelog
+        if: steps.version.outputs.release_needed == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          PREVIOUS: ${{ steps.version.outputs.previous }}
+          BUMP: ${{ steps.version.outputs.bump }}
+          NOTES_FILE: ${{ steps.version.outputs.notes_file }}
+        run: |
+          set -euo pipefail
+
+          heading='##'
+          [[ "$BUMP" == "major" || "$BUMP" == "minor" ]] && heading='#'
+
+          touch CHANGELOG.md
+
+          {
+            printf '%s [%s](https://github.com/%s/compare/%s...v%s) (%s)\n\n' \
+              "$heading" "$VERSION" "$GITHUB_REPOSITORY" "$PREVIOUS" "$VERSION" "$(date -u +%Y-%m-%d)"
+            cat "$NOTES_FILE"
+            printf '\n'
+            cat CHANGELOG.md
+          } > CHANGELOG.new
+
+          mv CHANGELOG.new CHANGELOG.md
+
+      - name: Tag and release
+        if: steps.version.outputs.release_needed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+          NOTES_FILE: ${{ steps.version.outputs.notes_file }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add CHANGELOG.md
+          # [skip ci] is belt and braces: a push made with the run's own token
+          # does not start another workflow anyway.
+          git commit -m "chore(release): ${VERSION} [skip ci]"
+
+          # Tag the commit that carries the changelog, so the tag and the notes
+          # describe the same tree.
+          git tag "$TAG"
+          git push origin HEAD:"${GITHUB_REF_NAME}"
+          git push origin "$TAG"
+
+          gh release create "$TAG" --title "$TAG" --notes-file "$NOTES_FILE"
+
+          {
+            echo "## Released $TAG"
+            echo
+            cat "$NOTES_FILE"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  publish:
+    name: Publish to NuGet
+    runs-on: macos-latest
+    needs: [ build, release ]
+
+    # Trusted publishing: nuget.org trusts this repository and this workflow
+    # file (policy owner INDIKO), so the job asks GitHub for an OIDC token and
+    # trades it for a short-lived API key. There is no long-lived key in the
+    # repository secrets. The OIDC token needs id-token: write; checkout still
+    # needs contents: read.
+    permissions:
+      contents: read
+      id-token: write
+
+    # After a release, or on any manual dispatch. always() is needed because
+    # the release job may legitimately produce no release, and a skipped
+    # dependency would otherwise skip this too; the explicit result checks keep
+    # it from running after a real failure.
+    if: >-
+      ${{ always()
+          && needs.build.result == 'success'
+          && needs.release.result == 'success'
+          && (needs.release.outputs.released == 'true'
+              || github.event_name == 'workflow_dispatch') }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set Xcode version
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: ${{ env.XCODE_VERSION }}
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Install MAUI workload (iOS SDK pinned)
+        # Same pin as the build job, and for the same reason plus one more:
+        # the manifest decides the platform version of the packed iOS asset.
+        run: |
+          cat > "${RUNNER_TEMP}/ios-workload-rollback.json" <<EOF
+          {
+            "microsoft.net.sdk.ios": "${IOS_WORKLOAD_MANIFEST}"
+          }
+          EOF
+          dotnet workload install maui --from-rollback-file "${RUNNER_TEMP}/ios-workload-rollback.json"
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Decide the version to publish
+        id: target
+        run: |
+          set -euo pipefail
+          version="${{ github.event.inputs.republish }}"
+          version="${version#v}"
+          [[ -z "$version" ]] && version="${{ needs.release.outputs.version }}"
+
+          # A dispatch without a version and with nothing new to release
+          # publishes the newest tag. --skip-duplicate on the push makes that a
+          # no-op when the version is already on nuget.org.
+          if [[ -z "$version" && "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            git fetch --tags --quiet origin
+            version="$(git tag --list 'v[0-9]*' --sort=-v:refname | head -n 1)"
+            version="${version#v}"
+          fi
+
+          if [[ -z "$version" ]]; then
+            echo "No version to publish." >&2
+            exit 1
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Pack
+        env:
+          VERSION: ${{ steps.target.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p artifacts
+          count=0
+
+          # Never with IndikoIosSdk26: that pin is for local builds against an
+          # older Xcode, and packing with it would name the asset folder after
+          # the pinned TFM instead of the workload's own platform version.
+          while read -r project; do
+            dotnet pack "$project" -c Release \
+              -p:PackageVersion="$VERSION" -o artifacts
+            count=$((count + 1))
+          done < <(.github/scripts/packable-projects.sh)
+
+          echo "Packed $count project(s) at $VERSION" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Check what was packed
+        # A package that silently lost its iOS asset, its readme or its icon is
+        # worth catching here rather than on the NuGet listing page.
+        run: |
+          set -euo pipefail
+
+          package="$(ls artifacts/*.nupkg | head -n 1)"
+          contents="$(unzip -Z1 "$package")"
+
+          for expected in "icon.png" "README.md"; do
+            grep -qx "$expected" <<< "$contents" || {
+              echo "missing from the package: $expected" >&2
+              exit 1
+            }
+          done
+
+          grep -q "^lib/net10.0-android" <<< "$contents" || {
+            echo "missing from the package: an android lib folder" >&2
+            exit 1
+          }
+
+          grep -q "^lib/net10.0-ios" <<< "$contents" || {
+            echo "missing from the package: an ios lib folder" >&2
+            exit 1
+          }
+
+          {
+            echo "### Package contents"
+            echo '```'
+            echo "$contents"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Immediately before the push on purpose: the key it hands out lives for
+      # about an hour, and the steps above can be slow. NUGET_USER is the
+      # nuget.org profile name, not a key.
+      - name: Log in to NuGet (trusted publishing)
+        id: nuget-login
+        uses: NuGet/login@v1
+        with:
+          user: ${{ secrets.NUGET_USER }}
+
+      - name: Push
+        env:
+          VERSION: ${{ steps.target.outputs.version }}
+          NUGET_API_KEY: ${{ steps.nuget-login.outputs.NUGET_API_KEY }}
+        run: |
+          set -uo pipefail
+          shopt -s nullglob
+
+          packages=(artifacts/*.nupkg)
+
+          if (( ${#packages[@]} == 0 )); then
+            echo "No packages were produced -- nothing to push." >&2
+            exit 1
+          fi
+
+          pushed=0
+          failed=()
+
+          for package in "${packages[@]}"; do
+            name="$(basename "$package" ".${VERSION}.nupkg")"
+
+            # --skip-duplicate is what makes a re-run safe: a dispatch against
+            # an already published version skips it instead of failing.
+            if dotnet nuget push "$package" \
+                 --source https://api.nuget.org/v3/index.json \
+                 --api-key "$NUGET_API_KEY" \
+                 --skip-duplicate; then
+              pushed=$((pushed + 1))
+            else
+              failed+=("$name")
+            fi
+          done
+
+          {
+            echo "| | |"
+            echo "|---|---|"
+            echo "| pushed | $pushed |"
+            echo "| failed | ${#failed[@]} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if (( ${#failed[@]} > 0 )); then
+            printf -- '- %s\n' "${failed[@]}" >> "$GITHUB_STEP_SUMMARY"
+            printf 'failed to push: %s\n' "${failed[*]}" >&2
+            exit 1
+          fi

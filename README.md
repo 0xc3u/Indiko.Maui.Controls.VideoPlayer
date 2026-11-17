@@ -283,9 +283,16 @@ dotnet build src/Indiko.Maui.Controls.VideoPlayer/Indiko.Maui.Controls.VideoPlay
   -p:IndikoIosSdk26=true -f net10.0-ios26.0
 ```
 
-It is for local builds only; releases are packed without it, so the published
-package carries `lib/net10.0-ios`. `-p:ValidateXcodeVersion=false` is not an
-alternative: it only moves the failure into the trimmer.
+It is for local builds only. Releases are packed without it — CI pins the iOS
+workload manifest instead — and the published package carries
+`lib/net10.0-ios26.0`, the same platform version as
+`Indiko.Maui.Controls.MapBox` 1.15.0, so an app can consume both.
+`-p:ValidateXcodeVersion=false` is not an alternative: it only moves the
+failure into the trimmer.
+
+The Xcode requirement is a minimum, not an exact match: the 26.0 iOS SDK
+builds fine against Xcode 26.6. The failure is the other direction, an SDK
+newer than the Xcode present.
 
 `scripts/make-test-videos.sh` generates the test footage with ffmpeg. Where
 ffmpeg was built without freetype and has no `drawtext` filter, it renders the
