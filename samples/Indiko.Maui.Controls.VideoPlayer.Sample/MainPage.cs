@@ -5,44 +5,76 @@ using Indiko.Maui.Controls.VideoPlayer.Timeline;
 namespace Indiko.Maui.Controls.VideoPlayer.Sample;
 
 /// <summary>
-/// Exercises every part of the control's API, and shows enough numbers to
-/// check the claims by eye.
+/// Exercises the control, and shows enough numbers to check its claims.
 /// </summary>
 /// <remarks>
-/// The readouts matter as much as the controls: the test footage has its frame
-/// number burnt into the picture, and the panel shows the frame number computed
-/// from position and frame rate. When the two agree after a seek, seeking is
-/// frame accurate — which is otherwise not something you can see.
+/// Laid out as an instrument rather than a demo: the timecode is the largest
+/// thing on the page because the frame field is what the package is for. The
+/// test footage burns its frame number into the picture, so the computed
+/// number sits directly above it and the two can be compared without
+/// instrumentation of any kind.
 /// </remarks>
 public class MainPage : ContentPage
 {
     private static readonly string[] BundledChapters =
         ["GH010001.MP4", "GH020001.MP4", "GH030001.MP4"];
 
+    private static readonly double[] Speeds = [0.25, 0.5, 1, 2];
+    private static readonly int[] Rates = [10, 15, 30];
+
     private readonly VideoPlayerView _player;
-    private readonly Label _state = Readout();
-    private readonly Label _position = Readout();
-    private readonly Label _chapter = Readout();
-    private readonly Label _format = Readout();
-    private readonly Label _frame = Readout();
-    private readonly Label _rate = Readout();
-    private readonly Label _error = Readout();
+    private readonly IVideoPicker _picker = VideoPickerFactory.Create();
+
+    private readonly Label _timecode = Numeric(40, Type.MonoSemi, text: "00:00:00:00");
+    private readonly Label _frame = Numeric(27, Type.MonoSemi, Ink.Measure, "0");
+    private readonly Label _duration = Numeric(13, Type.Mono, Ink.Muted, "of 00:00:00:00");
+    private readonly Label _chapter = Numeric(13, Type.Mono, Ink.Muted, "no source");
+    private readonly BoxView _tally = new()
+    {
+        WidthRequest = 9, HeightRequest = 9, CornerRadius = 5,
+        Color = Ink.Hairline, VerticalOptions = LayoutOptions.Center,
+        Margin = new Thickness(0, 0, 2, 0),
+    };
+
+    private readonly TimelineDrawable _timeline = new();
+    private readonly GraphicsView _timelineView;
     private readonly Slider _scrub;
+    private readonly TransportGlyph _glyph = new();
+    private readonly GraphicsView _glyphView;
+
+    private readonly Label _source = Detail("No source loaded");
+    private readonly Label _message = Detail("Pick a clip, or load the bundled chapters.");
+    private readonly Label _format = Numeric(13, Type.Mono);
+    private readonly Label _events = Numeric(13, Type.Mono);
+    private readonly Label _state = Numeric(13, Type.Mono);
+
+    private readonly Button[] _speedButtons = new Button[Speeds.Length];
+    private readonly Button[] _rateButtons = new Button[Rates.Length];
     private readonly Entry _seekEntry;
 
+    private readonly Label _empty = new()
+    {
+        Text = "Load the bundled chapters below.\nThey carry their frame number in the picture.",
+        FontFamily = Type.Sans,
+        FontSize = 13,
+        TextColor = Ink.Faint,
+        HorizontalTextAlignment = TextAlignment.Center,
+        VerticalTextAlignment = TextAlignment.Center,
+        LineHeight = 1.4,
+        Margin = 20,
+    };
+
     private readonly Queue<DateTime> _eventTimes = new();
-    private readonly IVideoPicker _picker = VideoPickerFactory.Create();
-    private readonly Label _picked = Readout();
+    private int _chapterCount;
     private bool _scrubbing;
 
     public MainPage()
     {
-        Title = "Indiko VideoPlayer";
-        BackgroundColor = Color.FromArgb("#0E0E14");
+        Title = "Indiko Video Player";
+        BackgroundColor = Ink.Panel;
 
         _player = new VideoPlayerView
         {
-            HeightRequest = 220,
             ScalingMode = VideoScalingMode.Fit,
             PositionUpdateRate = 15,
         };
@@ -51,96 +83,82 @@ public class MainPage : ContentPage
         _player.MediaFailed += OnMediaFailed;
         _player.PositionChanged += OnPositionChanged;
         _player.StateChanged += OnStateChanged;
-        _player.PlaybackEnded += (_, _) => _error.Text = "playback ended";
+        _player.PlaybackEnded += (_, _) => Say("Reached the end of the timeline.");
         _player.BookmarkRefreshed += (_, e) =>
         {
-            // The renewed value has to replace the stored one, or the renewal
-            // repeats on every open until the bookmark finally fails.
             PickedClipStore.Replace(e.ChapterIndex, e.NewBookmark);
-            _error.Text = $"bookmark renewed and stored for chapter {e.ChapterIndex}";
+            Say($"Renewed and stored the bookmark for chapter {e.ChapterIndex + 1}.");
         };
-        _player.DownloadProgress += (_, e) =>
-            _error.Text = $"iCloud download {e.Progress:P0}";
+        _player.DownloadProgress += (_, e) => Say($"Downloading from iCloud, {e.Progress:P0}.");
 
-        _scrub = new Slider { Maximum = 1, Minimum = 0, ThumbColor = Colors.White };
+        _timelineView = new GraphicsView
+        {
+            Drawable = _timeline,
+            HeightRequest = 24,
+            InputTransparent = true,
+        };
+
+        // A stock slider cannot show chapter seams, so the track is drawn and
+        // the slider rides invisibly on top purely to collect the drag.
+        _scrub = new Slider
+        {
+            Maximum = 1,
+            ThumbColor = Colors.Transparent,
+            MinimumTrackColor = Colors.Transparent,
+            MaximumTrackColor = Colors.Transparent,
+            HeightRequest = 24,
+        };
         _scrub.DragStarted += (_, _) => { _scrubbing = true; _player.BeginScrub(); };
         _scrub.DragCompleted += (_, _) => { _scrubbing = false; _player.EndScrub(); };
         _scrub.ValueChanged += (_, e) =>
         {
-            if (_scrubbing && _player.Duration > TimeSpan.Zero)
-                _player.ScrubTo(_player.Duration * e.NewValue);
+            if (!_scrubbing || _player.Duration <= TimeSpan.Zero)
+                return;
+
+            _timeline.Progress = e.NewValue;
+            _timelineView.Invalidate();
+            _player.ScrubTo(_player.Duration * e.NewValue);
         };
+
+        _glyphView = new GraphicsView { Drawable = _glyph, HeightRequest = 26, WidthRequest = 26 };
 
         _seekEntry = new Entry
         {
-            Placeholder = "seconds, e.g. 23.5",
+            Placeholder = "seconds",
             Keyboard = Keyboard.Numeric,
-            TextColor = Colors.White,
-            WidthRequest = 140,
+            TextColor = Ink.Text,
+            PlaceholderColor = Ink.Faint,
+            BackgroundColor = Ink.Well,
+            FontFamily = Type.Mono,
+            FontSize = 14,
+            HeightRequest = 44,
+            WidthRequest = 110,
         };
 
         Content = new ScrollView
         {
             Content = new VerticalStackLayout
             {
-                Padding = 12,
-                Spacing = 10,
                 Children =
                 {
-                    _player,
-                    Section("Source"),
-                    Row(
-                        Button("Bundled chapters", LoadBundledChaptersAsync),
-                        Button("Single clip", LoadSingleBundledClipAsync)),
-
-                    Section("Pick by reference"),
-                    Row(
-                        Button(_picker.Labels.Photos, () => PickAsync(fromPhotos: true)),
-                        Button(_picker.Labels.Files, () => PickAsync(fromPhotos: false))),
-                    Row(
-                        Button("Copy clip to Files", CopyToDocumentsAsync),
-                        Button("Replay saved", ReplaySavedAsync),
-                        Button("Forget saved", () => { PickedClipStore.Clear(); _picked.Text = "saved references cleared"; return Task.CompletedTask; })),
-                    _picked,
-                    Row(
-                        Button("Missing file", () => { _player.Source = VideoPlayerSource.FromFile("/does/not/exist.mp4"); return Task.CompletedTask; }),
-                        Button("Unsupported kind", () => { _player.Source = VideoPlayerSource.FromClip(VideoClip.FromPhotoAsset("no-such-asset")); return Task.CompletedTask; }),
-                        Button("Clear", () => { _player.Source = null; return Task.CompletedTask; })),
-
-                    Section("Transport"),
-                    Row(
-                        Button("-10f", () => _player.StepFrameAsync(-10)),
-                        Button("-1f", () => _player.StepFrameAsync(-1)),
-                        Button("Play", () => { _player.Play(); return Task.CompletedTask; }),
-                        Button("Pause", () => { _player.Pause(); return Task.CompletedTask; }),
-                        Button("+1f", () => _player.StepFrameAsync(1)),
-                        Button("+10f", () => _player.StepFrameAsync(10))),
-                    Row(
-                        Button("Stop", () => { _player.Stop(); return Task.CompletedTask; }),
-                        Button("0.25x", () => SetSpeed(0.25)),
-                        Button("0.5x", () => SetSpeed(0.5)),
-                        Button("1x", () => SetSpeed(1)),
-                        Button("2x", () => SetSpeed(2))),
-                    _scrub,
-                    Row(
-                        _seekEntry,
-                        Button("Seek exact", SeekToEntryAsync)),
-
-                    Section("Options"),
-                    Row(
-                        Button("Mute", () => { _player.IsMuted = !_player.IsMuted; return Task.CompletedTask; }),
-                        Button("Loop", () => { _player.IsLooping = !_player.IsLooping; return Task.CompletedTask; }),
-                        Button("Scaling", CycleScaling)),
-                    Row(
-                        Button("10 Hz", () => SetRate(10)),
-                        Button("15 Hz", () => SetRate(15)),
-                        Button("30 Hz", () => SetRate(30))),
-
-                    Section("Readout"),
-                    _state, _position, _chapter, _format, _frame, _rate, _error,
+                    VideoWell(),
+                    Readout(),
+                    Scrubber(),
+                    Transport(),
+                    Hairline(),
+                    Section("Playback", SpeedAndRate()),
+                    Hairline(),
+                    Section("Source", SourceControls()),
+                    Hairline(),
+                    Section("Failure modes", FailureControls()),
+                    Hairline(),
+                    Section("Diagnostics", Diagnostics()),
                 },
             },
         };
+
+        SyncSpeed();
+        SyncRate();
     }
 
     protected override void OnDisappearing()
@@ -149,9 +167,415 @@ public class MainPage : ContentPage
         base.OnDisappearing();
     }
 
-    // Bundled assets live inside the app package, which is not a path the
-    // platforms can play from. Copying once into the cache is the shortest way
-    // to a real file path; a real app would hold a reference the user picked.
+    // ── Layout ───────────────────────────────────────────────────────────────
+
+    private View VideoWell()
+    {
+        var surface = new Grid { Children = { _player, _empty } };
+
+        return new Border
+        {
+            BackgroundColor = Ink.Well,
+            Stroke = Ink.Hairline,
+            StrokeThickness = 1,
+            StrokeShape = new Microsoft.Maui.Controls.Shapes.RoundRectangle { CornerRadius = 4 },
+            Margin = new Thickness(16, 16, 16, 12),
+            HeightRequest = 212,
+            Content = surface,
+        };
+    }
+
+    private View Readout()
+    {
+        var left = new VerticalStackLayout { Spacing = 2 };
+        left.Children.Add(_timecode);
+
+        var meta = new HorizontalStackLayout { Spacing = 14 };
+        meta.Children.Add(_duration);
+        meta.Children.Add(_chapter);
+        left.Children.Add(meta);
+
+        // The frame number is the other half of the claim, so it is sized to
+        // match the timecode rather than tucked into a corner. Its caption sits
+        // underneath, where it cannot be mistaken for part of the number.
+        _frame.HorizontalTextAlignment = TextAlignment.End;
+
+        var right = new VerticalStackLayout
+        {
+            Spacing = 0,
+            HorizontalOptions = LayoutOptions.End,
+            VerticalOptions = LayoutOptions.Start,
+            Children =
+            {
+                _frame,
+                new Label
+                {
+                    Text = "frame on screen",
+                    FontFamily = Type.Sans,
+                    FontSize = 11,
+                    TextColor = Ink.Faint,
+                    HorizontalTextAlignment = TextAlignment.End,
+                },
+            },
+        };
+
+        var grid = new Grid
+        {
+            Padding = new Thickness(16, 0, 16, 10),
+            ColumnDefinitions =
+            {
+                new ColumnDefinition(GridLength.Auto),
+                new ColumnDefinition(GridLength.Star),
+                new ColumnDefinition(GridLength.Auto),
+            },
+            ColumnSpacing = 8,
+        };
+
+        grid.Add(_tally, 0);
+        grid.Add(left, 1);
+        grid.Add(right, 2);
+        return grid;
+    }
+
+    private View Scrubber() => new Grid
+    {
+        Padding = new Thickness(16, 0, 16, 4),
+        Children = { _timelineView, _scrub },
+    };
+
+    private View Transport()
+    {
+        var row = new Grid
+        {
+            Padding = new Thickness(16, 6, 16, 16),
+            ColumnSpacing = 8,
+            ColumnDefinitions =
+            {
+                new ColumnDefinition(GridLength.Star),
+                new ColumnDefinition(GridLength.Star),
+                new ColumnDefinition(new GridLength(1.3, GridUnitType.Star)),
+                new ColumnDefinition(GridLength.Star),
+                new ColumnDefinition(GridLength.Star),
+            },
+        };
+
+        row.Add(Step("−10", -10), 0);
+        row.Add(Step("−1", -1), 1);
+        row.Add(PlayPause(), 2);
+        row.Add(Step("+1", 1), 3);
+        row.Add(Step("+10", 10), 4);
+        return row;
+    }
+
+    private View PlayPause()
+    {
+        var border = new Border
+        {
+            BackgroundColor = Ink.Raised,
+            Stroke = Ink.RaisedEdge,
+            StrokeThickness = 1,
+            StrokeShape = new Microsoft.Maui.Controls.Shapes.RoundRectangle { CornerRadius = 8 },
+            HeightRequest = 52,
+            Content = _glyphView,
+        };
+
+        var tap = new TapGestureRecognizer();
+        tap.Tapped += (_, _) =>
+        {
+            if (_player.IsPlaying)
+                _player.Pause();
+            else
+                _player.Play();
+        };
+        border.GestureRecognizers.Add(tap);
+
+        SemanticProperties.SetDescription(border, "Play or pause");
+        return border;
+    }
+
+    private View SpeedAndRate()
+    {
+        var stack = new VerticalStackLayout { Spacing = 14 };
+
+        var speeds = Group("Speed");
+        for (var i = 0; i < Speeds.Length; i++)
+        {
+            var speed = Speeds[i];
+            _speedButtons[i] = Segment(FormatSpeed(speed), () =>
+            {
+                _player.Speed = speed;
+                SyncSpeed();
+                return Task.CompletedTask;
+            });
+            speeds.Add(_speedButtons[i]);
+        }
+
+        stack.Children.Add(Labelled("Speed", speeds));
+
+        var rates = Group("Rate");
+        for (var i = 0; i < Rates.Length; i++)
+        {
+            var rate = Rates[i];
+            _rateButtons[i] = Segment($"{rate} Hz", () =>
+            {
+                _player.PositionUpdateRate = rate;
+                SyncRate();
+                return Task.CompletedTask;
+            });
+            rates.Add(_rateButtons[i]);
+        }
+
+        stack.Children.Add(Labelled("Position events", rates));
+
+        var jump = new HorizontalStackLayout { Spacing = 8 };
+        jump.Add(_seekEntry);
+        jump.Add(Action("Seek", SeekToEntryAsync));
+        stack.Children.Add(Labelled("Jump to a time", jump));
+
+        var toggles = Group("Options");
+        toggles.Add(Action("Mute", () => { _player.IsMuted = !_player.IsMuted; Say(_player.IsMuted ? "Muted." : "Sound on."); return Task.CompletedTask; }));
+        toggles.Add(Action("Loop", () => { _player.IsLooping = !_player.IsLooping; Say(_player.IsLooping ? "Looping." : "Looping off."); return Task.CompletedTask; }));
+        toggles.Add(Action("Scaling", CycleScaling));
+        toggles.Add(Action("Back to start", () => { _player.Stop(); return Task.CompletedTask; }));
+        stack.Children.Add(toggles);
+
+        return stack;
+    }
+
+    private View SourceControls()
+    {
+        var stack = new VerticalStackLayout { Spacing = 14 };
+
+        var bundled = Group("Bundled");
+        bundled.Add(Action("Three chapters", LoadBundledChaptersAsync));
+        bundled.Add(Action("Single clip", LoadSingleBundledClipAsync));
+        stack.Children.Add(Labelled("Ships with the sample", bundled));
+
+        var picked = Group("Picked");
+        picked.Add(Action(_picker.Labels.Photos, () => PickAsync(fromPhotos: true)));
+        picked.Add(Action(_picker.Labels.Files, () => PickAsync(fromPhotos: false)));
+        stack.Children.Add(Labelled("Played by reference, never copied", picked));
+
+        var saved = Group("Saved");
+        saved.Add(Action("Replay saved", ReplaySavedAsync));
+        saved.Add(Action("Forget saved", () =>
+        {
+            PickedClipStore.Clear();
+            Say("Cleared the saved references.");
+            return Task.CompletedTask;
+        }));
+#if IOS
+        saved.Add(Action("Put a clip in Files", CopyToDocumentsAsync));
+#endif
+        stack.Children.Add(Labelled("Survives an app restart", saved));
+
+        stack.Children.Add(_source);
+        return stack;
+    }
+
+    private View FailureControls()
+    {
+        var group = Group("Failures");
+        group.Add(Action("Missing file", () =>
+        {
+            _player.Source = VideoPlayerSource.FromFile("/does/not/exist.mp4");
+            return Task.CompletedTask;
+        }));
+        group.Add(Action("Wrong kind for this platform", () =>
+        {
+            _player.Source = VideoPlayerSource.FromClip(VideoClip.FromPhotoAsset("no-such-asset"));
+            return Task.CompletedTask;
+        }));
+        group.Add(Action("Unload", () =>
+        {
+            _player.Source = null;
+            _empty.IsVisible = true;
+            _source.Text = "No source loaded";
+            Say("Released the player.");
+            return Task.CompletedTask;
+        }));
+
+        return new VerticalStackLayout
+        {
+            Spacing = 10,
+            Children = { Labelled("Each one reports, none of them crash", group), _message },
+        };
+    }
+
+    private View Diagnostics() => new VerticalStackLayout
+    {
+        Spacing = 8,
+        Children =
+        {
+            Reading("State", _state),
+            Reading("Media", _format),
+            Reading("Event rate", _events),
+        },
+    };
+
+    // ── Pieces ───────────────────────────────────────────────────────────────
+
+    private static View Section(string heading, View body) => new VerticalStackLayout
+    {
+        Padding = new Thickness(16, 14, 16, 16),
+        Spacing = 12,
+        Children =
+        {
+            new Label
+            {
+                Text = heading,
+                FontFamily = Type.SansSemi,
+                FontSize = 15,
+                TextColor = Ink.Text,
+            },
+            body,
+        },
+    };
+
+    private static View Labelled(string caption, View body) => new VerticalStackLayout
+    {
+        Spacing = 6,
+        Children =
+        {
+            new Label { Text = caption, FontFamily = Type.Sans, FontSize = 12, TextColor = Ink.Faint },
+            body,
+        },
+    };
+
+    private static View Reading(string caption, Label value)
+    {
+        var grid = new Grid
+        {
+            ColumnDefinitions =
+            {
+                new ColumnDefinition(new GridLength(110)),
+                new ColumnDefinition(GridLength.Star),
+            },
+        };
+
+        grid.Add(new Label
+        {
+            Text = caption,
+            FontFamily = Type.Sans,
+            FontSize = 13,
+            TextColor = Ink.Faint,
+        }, 0);
+
+        grid.Add(value, 1);
+        return grid;
+    }
+
+    private static FlexLayout Group(string name) => new()
+    {
+        Wrap = Microsoft.Maui.Layouts.FlexWrap.Wrap,
+        JustifyContent = Microsoft.Maui.Layouts.FlexJustify.Start,
+        AlignItems = Microsoft.Maui.Layouts.FlexAlignItems.Start,
+        Margin = new Thickness(0, 0, -8, -8),
+    };
+
+    private static View Hairline() => new BoxView
+    {
+        HeightRequest = 1,
+        Color = Ink.Hairline,
+        Margin = new Thickness(16, 0),
+    };
+
+    private static Label Numeric(double size, string family, Color? color = null, string text = "—") => new()
+    {
+        FontFamily = family,
+        FontSize = size,
+        TextColor = color ?? Ink.Text,
+        Text = text,
+    };
+
+    private static Label Detail(string text) => new()
+    {
+        Text = text,
+        FontFamily = Type.Sans,
+        FontSize = 13,
+        TextColor = Ink.Muted,
+        LineHeight = 1.35,
+    };
+
+    private Button Action(string text, Func<Task> handler)
+    {
+        var button = new Button
+        {
+            Text = text,
+            FontFamily = Type.Sans,
+            FontSize = 14,
+            TextColor = Ink.Text,
+            BackgroundColor = Ink.Raised,
+            BorderColor = Ink.RaisedEdge,
+            BorderWidth = 1,
+            CornerRadius = 8,
+            Padding = new Thickness(14, 0),
+            MinimumWidthRequest = 0,
+            HeightRequest = 44,
+            Margin = new Thickness(0, 0, 8, 8),
+        };
+
+        button.Clicked += async (_, _) =>
+        {
+            try
+            {
+                await handler();
+            }
+            catch (Exception ex)
+            {
+                // A sample that dies on a failed action teaches nothing.
+                Say($"{ex.GetType().Name}: {ex.Message}");
+            }
+        };
+
+        return button;
+    }
+
+    private Button Segment(string text, Func<Task> handler)
+    {
+        var button = Action(text, handler);
+        button.FontFamily = Type.Mono;
+        button.Padding = new Thickness(10, 0);
+        button.MinimumWidthRequest = 62;
+        return button;
+    }
+
+    private void SyncSpeed()
+    {
+        for (var i = 0; i < _speedButtons.Length; i++)
+            Mark(_speedButtons[i], Math.Abs(_player.Speed - Speeds[i]) < 0.001);
+    }
+
+    private void SyncRate()
+    {
+        for (var i = 0; i < _rateButtons.Length; i++)
+            Mark(_rateButtons[i], _player.PositionUpdateRate == Rates[i]);
+    }
+
+    // Red marks what is live. It is the only thing on the page allowed to use
+    // it, which is what keeps it meaning something.
+    private static void Mark(Button button, bool active)
+    {
+        button.BackgroundColor = active ? Ink.Tally : Ink.Raised;
+        button.BorderColor = active ? Ink.Tally : Ink.RaisedEdge;
+        button.TextColor = active ? Colors.White : Ink.Text;
+    }
+
+    // ── Behaviour ────────────────────────────────────────────────────────────
+
+    private static string FormatSpeed(double speed) =>
+        speed == Math.Floor(speed) ? $"{speed:0}×" : $"{speed:0.##}×";
+
+    private static string Timecode(TimeSpan position, double frameRate)
+    {
+        var fps = FrameMath.EffectiveFrameRate(frameRate);
+        var frames = FrameMath.FrameIndexAt(position, fps) % (long)Math.Round(fps);
+
+        return $"{position.Hours:00}:{position.Minutes:00}:{position.Seconds:00}:{frames:00}";
+    }
+
+    private void Say(string message) => _message.Text = message;
+
     private static async Task<string> EnsureCachedAsync(string assetName)
     {
         var target = Path.Combine(FileSystem.CacheDirectory, assetName);
@@ -172,19 +596,19 @@ public class MainPage : ContentPage
         foreach (var name in BundledChapters)
             clips.Add(VideoClip.FromFile(await EnsureCachedAsync(name)));
 
-        _error.Text = "three files, one timeline (frame numbers run 0-1799)";
+        _source.Text = "Three files, one timeline. Frame numbers run 0 to 1799 without a break.";
+        Say("Seek to 45 s: the picture should read 1350.");
         _player.Source = VideoPlayerSource.FromChapters(clips);
     }
 
     private async Task LoadSingleBundledClipAsync()
     {
-        _error.Text = "single clip";
+        _source.Text = $"One file, {BundledChapters[0]}.";
+        Say("Loaded a single clip.");
         _player.Source = VideoPlayerSource.FromFile(await EnsureCachedAsync(BundledChapters[0]));
     }
 
-    // The document picker can only pick what the Files app can see. On iOS the
-    // app's Documents folder shows up there once the two sharing keys are set,
-    // so this puts a clip where the picker can reach it.
+#if IOS
     private async Task CopyToDocumentsAsync()
     {
         var documents = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
@@ -197,8 +621,9 @@ public class MainPage : ContentPage
             await source.CopyToAsync(destination);
         }
 
-        _picked.Text = $"{BundledChapters[0]} is in the app's Documents folder";
+        Say($"{BundledChapters[0]} is now in Files, under On My iPhone.");
     }
+#endif
 
     private async Task PickAsync(bool fromPhotos)
     {
@@ -208,48 +633,46 @@ public class MainPage : ContentPage
 
         if (picked.Count == 0)
         {
-            _picked.Text = "nothing picked";
+            Say("Nothing picked.");
             return;
         }
 
         PickedClipStore.Save(picked);
-        Apply(picked, "picked");
+        Apply(picked, "Picked");
+        Say("Stored. Restart the app and press Replay saved to prove the reference survives.");
     }
 
-    // The button that matters: the references were stored in a previous run,
-    // and this replays them without picking anything. A path would be dead by
-    // now; a bookmark or a persisted URI is not.
     private Task ReplaySavedAsync()
     {
         var saved = PickedClipStore.Load();
 
         if (saved.Count == 0)
         {
-            _picked.Text = "nothing saved yet";
+            Say("Nothing saved yet. Pick something first.");
             return Task.CompletedTask;
         }
 
-        Apply(saved, "replayed from storage");
+        Apply(saved, "Replayed from storage");
+        Say("Loaded from storage, with nothing picked this time.");
         return Task.CompletedTask;
     }
 
     private void Apply(IReadOnlyList<PickedClip> clips, string what)
     {
-        _picked.Text = $"{what}: {string.Join(", ", clips.Select(c => $"{c.Label} [{c.Kind}]"))}";
+        _source.Text =
+            $"{what}: {string.Join(", ", clips.Select(c => $"{c.Label} ({Describe(c.Kind)})"))}";
+
         _player.Source = VideoPlayerSource.FromChapters(clips.Select(c => c.ToClip()));
     }
 
-    private Task SetSpeed(double speed)
+    private static string Describe(VideoClipKind kind) => kind switch
     {
-        _player.Speed = speed;
-        return Task.CompletedTask;
-    }
-
-    private Task SetRate(int hz)
-    {
-        _player.PositionUpdateRate = hz;
-        return Task.CompletedTask;
-    }
+        VideoClipKind.FilePath => "file path",
+        VideoClipKind.ContentUri => "content URI",
+        VideoClipKind.PhotoAsset => "photo library",
+        VideoClipKind.SecurityScopedBookmark => "bookmark",
+        _ => kind.ToString(),
+    };
 
     private Task CycleScaling()
     {
@@ -260,54 +683,129 @@ public class MainPage : ContentPage
             _ => VideoScalingMode.Fit,
         };
 
-        _error.Text = $"scaling: {_player.ScalingMode}";
+        Say($"Scaling: {_player.ScalingMode}.");
         return Task.CompletedTask;
+    }
+
+    private async Task Step(int frames)
+    {
+        var reached = await _player.StepFrameAsync(frames);
+
+        if (!reached)
+            Say("The step was overtaken or there is nothing loaded.");
+    }
+
+    private View Step(string text, int frames)
+    {
+        var button = Action(text, () => Step(frames));
+        button.FontFamily = Type.Mono;
+        button.Padding = new Thickness(0);
+        button.HeightRequest = 52;
+        button.Margin = new Thickness(0);
+        SemanticProperties.SetDescription(button, $"Step {Math.Abs(frames)} frames {(frames < 0 ? "back" : "forward")}");
+        return button;
     }
 
     private async Task SeekToEntryAsync()
     {
         if (!double.TryParse(_seekEntry.Text, out var seconds))
         {
-            _error.Text = "enter a number of seconds";
+            Say("Type a number of seconds to jump to.");
             return;
         }
 
         var reached = await _player.SeekExactAsync(TimeSpan.FromSeconds(seconds));
-        _error.Text = reached ? $"seek to {seconds:0.###}s reached" : "seek was overtaken";
+        Say(reached
+            ? $"Landed on {seconds:0.###} s. Compare the frame number with the picture."
+            : "A newer seek overtook this one.");
     }
+
+    // ── Reporting ────────────────────────────────────────────────────────────
 
     private void OnMediaOpened(object? sender, VideoOpenedEventArgs e)
     {
-        _format.Text =
-            $"fps {e.FrameRate:0.###}   {e.NaturalSize.Width:0}x{e.NaturalSize.Height:0}   " +
-            $"chapters {e.ChapterDurations.Count} [{string.Join(", ", e.ChapterDurations.Select(d => $"{d.TotalSeconds:0.##}s"))}]";
+        _empty.IsVisible = false;
+        _chapterCount = e.ChapterDurations.Count;
+
+        var size = e.NaturalSize.Width > 0 ? $"{e.NaturalSize.Width:0}×{e.NaturalSize.Height:0}" : "size unknown";
+        var rate = e.FrameRate > 0 ? $"{e.FrameRate:0.###} fps" : "frame rate unknown";
+
+        _format.Text = $"{rate}   {size}   {e.ChapterDurations.Count} chapter{(e.ChapterDurations.Count == 1 ? "" : "s")}";
+        _duration.Text = $"of {Timecode(e.Duration, e.FrameRate)}";
+
+        if (e.ChapterDurations.Count > 1 && e.Duration > TimeSpan.Zero)
+        {
+            var boundaries = new List<double>();
+            var cursor = TimeSpan.Zero;
+
+            foreach (var chapter in e.ChapterDurations.Take(e.ChapterDurations.Count - 1))
+            {
+                cursor += chapter;
+                boundaries.Add(cursor / e.Duration);
+            }
+
+            _timeline.ChapterBoundaries = boundaries;
+        }
+        else
+        {
+            _timeline.ChapterBoundaries = [];
+        }
+
+        _timelineView.Invalidate();
     }
 
-    private void OnMediaFailed(object? sender, VideoFailedEventArgs e) =>
-        _error.Text = $"failed: {e.ErrorCode} (chapter {e.ChapterIndex}) - {e.Message}";
+    private void OnMediaFailed(object? sender, VideoFailedEventArgs e)
+    {
+        var where = e.ChapterIndex >= 0 ? $" in chapter {e.ChapterIndex + 1}" : string.Empty;
+        Say($"{Explain(e.ErrorCode)}{where}");
+    }
 
-    private void OnStateChanged(object? sender, VideoStateChangedEventArgs e) =>
-        _state.Text = $"state {e.NewState}";
+    // The code is what an app would log; this is what a person can act on.
+    private static string Explain(VideoErrorCode code) => code switch
+    {
+        VideoErrorCode.NotFound => "That file is gone. Pick it again.",
+        VideoErrorCode.PermissionDenied => "No access to the photo library. Grant it in Settings, or pick from files instead.",
+        VideoErrorCode.PermissionLost => "The permission for this clip was revoked. Pick it again.",
+        VideoErrorCode.BookmarkInvalid => "This bookmark no longer resolves. Pick the file again.",
+        VideoErrorCode.NetworkRequired => "Only an iCloud copy exists. Allow network access to download it.",
+        VideoErrorCode.UnsupportedSource => "That kind of reference does not exist on this platform.",
+        VideoErrorCode.UnsupportedFormat => "This file cannot be decoded here.",
+        _ => "Playback failed.",
+    };
+
+    private void OnStateChanged(object? sender, VideoStateChangedEventArgs e)
+    {
+        _state.Text = e.NewState.ToString();
+
+        var live = e.NewState == VideoPlayerState.Playing;
+        _tally.Color = live ? Ink.Tally : Ink.Hairline;
+        _timeline.IsLive = live;
+        _glyph.ShowPause = live;
+        _glyphView.Invalidate();
+        _timelineView.Invalidate();
+    }
 
     private void OnPositionChanged(object? sender, VideoPositionChangedEventArgs e)
     {
-        _position.Text = $"{e.Position:mm\\:ss\\.fff} / {_player.Duration:mm\\:ss\\.fff}";
-        _chapter.Text = $"chapter {e.ChapterIndex} at {e.ChapterPosition:mm\\:ss\\.fff}";
-
-        // The number the picture should be showing, if seeking is exact.
         var fps = _player.FrameRate;
-        _frame.Text = fps > 0
-            ? $"frame {FrameMath.FrameIndexAt(e.Position, fps)} (expected on screen)"
-            : "frame rate unknown";
+
+        _timecode.Text = Timecode(e.Position, fps);
+        _frame.Text = fps > 0 ? FrameMath.FrameIndexAt(e.Position, fps).ToString() : "—";
+        _chapter.Text = _chapterCount > 1
+            ? $"chapter {e.ChapterIndex + 1} of {_chapterCount}"
+            : "one chapter";
 
         if (!_scrubbing && _player.Duration > TimeSpan.Zero)
-            _scrub.Value = Math.Clamp(e.Position / _player.Duration, 0, 1);
+        {
+            var progress = Math.Clamp(e.Position / _player.Duration, 0, 1);
+            _scrub.Value = progress;
+            _timeline.Progress = progress;
+            _timelineView.Invalidate();
+        }
 
         MeasureEventRate();
     }
 
-    // The control promises 10-30 Hz; this is the sample measuring what it
-    // actually delivers rather than repeating the claim.
     private void MeasureEventRate()
     {
         var now = DateTime.UtcNow;
@@ -316,63 +814,6 @@ public class MainPage : ContentPage
         while (_eventTimes.Count > 0 && now - _eventTimes.Peek() > TimeSpan.FromSeconds(1))
             _eventTimes.Dequeue();
 
-        _rate.Text = $"events {_eventTimes.Count}/s (asked for {_player.PositionUpdateRate} Hz)";
-    }
-
-    private static Label Readout() => new()
-    {
-        TextColor = Color.FromArgb("#D6D6E0"),
-        FontSize = 13,
-        FontFamily = "monospace",
-    };
-
-    private static Label Section(string text) => new()
-    {
-        Text = text.ToUpperInvariant(),
-        TextColor = Color.FromArgb("#6F7BA0"),
-        FontSize = 11,
-        CharacterSpacing = 1.5,
-        Margin = new Thickness(0, 8, 0, 0),
-    };
-
-    private static View Row(params View[] children)
-    {
-        var layout = new HorizontalStackLayout { Spacing = 6 };
-        foreach (var child in children)
-            layout.Children.Add(child);
-
-        return new ScrollView { Orientation = ScrollOrientation.Horizontal, Content = layout };
-    }
-
-    private static Button Button(string text, Func<Task> action)
-    {
-        var button = new Microsoft.Maui.Controls.Button
-        {
-            Text = text,
-            FontSize = 13,
-            Padding = new Thickness(12, 6),
-            MinimumWidthRequest = 0,
-            BackgroundColor = Color.FromArgb("#243049"),
-            TextColor = Colors.White,
-            CornerRadius = 8,
-        };
-
-        // A sample that dies on a failed action teaches nothing. Showing the
-        // exception in the readout is also how the deliberate failure buttons
-        // stay honest: MediaFailed is an event, but a missing bundled asset is
-        // an ordinary IO error on the app's side of the line.
-        button.Clicked += async (_, _) =>
-        {
-            try
-            {
-                await action();
-            }
-            catch (Exception ex)
-            {
-                if (Application.Current?.Windows.FirstOrDefault()?.Page is MainPage page)
-                    page._error.Text = $"{ex.GetType().Name}: {ex.Message}";
-            }
-        };
-        return button;
+        _events.Text = $"{_eventTimes.Count}/s of {_player.PositionUpdateRate} asked for";
     }
 }
