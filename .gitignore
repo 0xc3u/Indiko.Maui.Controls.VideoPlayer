@@ -20,3 +20,6 @@ nuget.config
 # Generated footage bundled into the sample app for simulator runs
 samples/Indiko.Maui.Controls.VideoPlayer.Sample/Resources/Raw/*.MP4
 samples/Indiko.Maui.Controls.VideoPlayer.Sample/Resources/Raw/*.mp4
+
+# Run screenshots: evidence for a PR, regenerated per run, not source
+screenshots/
