@@ -1,3 +1,13 @@
+# [1.3.0](https://github.com/0xc3u/Indiko.Maui.Controls.VideoPlayer/compare/v1.2.0...v1.3.0) (2026-11-18)
+
+### Features
+
+* count frames from the container instead of from a frame rate ([0e60ef3](https://github.com/0xc3u/Indiko.Maui.Controls.VideoPlayer/commit/0e60ef37e276c42961a14b58e935c531c34dbec8))
+* speeds up to sixteen times, and backwards where that is real ([7118fcd](https://github.com/0xc3u/Indiko.Maui.Controls.VideoPlayer/commit/7118fcde198c1415f37b285f58f9845f1a7f76fd))
+* in and out points, with a loop between them ([71bb077](https://github.com/0xc3u/Indiko.Maui.Controls.VideoPlayer/commit/71bb077baccc1f3170d4a76fd16eec5f2a4752d0))
+* the frame on screen, the pixel under a tap, and a still of it ([1e91b24](https://github.com/0xc3u/Indiko.Maui.Controls.VideoPlayer/commit/1e91b24879802d479c3912481d1ce3f8da3e66ec))
+
+
 # [1.2.0](https://github.com/0xc3u/Indiko.Maui.Controls.VideoPlayer/compare/v1.1.0...v1.2.0) (2026-11-18)
 
 ### Features
