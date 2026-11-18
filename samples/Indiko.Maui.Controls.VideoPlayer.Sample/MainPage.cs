@@ -58,6 +58,7 @@ public class MainPage : ContentPage
     private readonly Label _derived = Numeric(13, Type.Mono);
     private readonly Label _picked = Numeric(13, Type.Mono, text: "tap the picture");
     private readonly Label _grab = Numeric(13, Type.Mono);
+    private readonly Label _rangeReadout = Numeric(13, Type.Mono, text: "whole media");
     private readonly Image _still = new()
     {
         HeightRequest = 92,
@@ -199,6 +200,8 @@ public class MainPage : ContentPage
                     Section("Zoom", ZoomControls()),
                     Hairline(),
                     Section("Frame and picture", FrameControls()),
+                    Hairline(),
+                    Section("Range", RangeControls()),
                     Hairline(),
                     Section("Source", SourceControls()),
                     Hairline(),
@@ -472,6 +475,44 @@ public class MainPage : ContentPage
         return stack;
     }
 
+    private View RangeControls()
+    {
+        var stack = new VerticalStackLayout { Spacing = 14 };
+
+        var marks = Group("Marks");
+        marks.Add(Action("Mark in", () => Mark(inPoint: true)));
+        marks.Add(Action("Mark out", () => Mark(inPoint: false)));
+        marks.Add(Action("Clear", () =>
+        {
+            _player.ClearRange();
+            SyncRange();
+            Say("Range cleared; the whole media plays again.");
+            return Task.CompletedTask;
+        }));
+        stack.Children.Add(Labelled("At the position on screen", marks));
+
+        var quick = Group("Quick");
+        quick.Add(Action("Loop 2 s here", () =>
+        {
+            _player.InPoint = _player.Position;
+            _player.OutPoint = _player.Position + TimeSpan.FromSeconds(2);
+            _player.IsLooping = true;
+            SyncRange();
+            _player.Play();
+            Say("Two seconds on repeat. The frame counter runs the same 60 frames.");
+            return Task.CompletedTask;
+        }));
+        quick.Add(Action("Play range", () => { _player.Play(); return Task.CompletedTask; }));
+        stack.Children.Add(Labelled("The working tool of movement analysis", quick));
+
+        stack.Children.Add(Detail(
+            "Playback stops at the out point, or jumps back to the in point while Loop "
+            + "is on. Seeking is not confined: the scrubber still reaches the whole "
+            + "media, and pressing play from outside the range starts at its beginning."));
+
+        return stack;
+    }
+
     private View SourceControls()
     {
         var stack = new VerticalStackLayout { Spacing = 14 };
@@ -543,6 +584,7 @@ public class MainPage : ContentPage
             Reading("Zoom", _zoomReadout),
             Reading("From the clock", _derived),
             Reading("Picked pixel", _picked),
+            Reading("Range", _rangeReadout),
         },
     };
 
@@ -903,6 +945,49 @@ public class MainPage : ContentPage
         _still.IsVisible = true;
         _grab.Text = $"PNG, {png.Length / 1024.0:0.#} kB, frame {_player.CurrentFrame}";
         Say("Captured the frame at full resolution.");
+    }
+
+    private Task Mark(bool inPoint)
+    {
+        if (inPoint)
+            _player.InPoint = _player.Position;
+        else
+            _player.OutPoint = _player.Position;
+
+        SyncRange();
+        Say($"{(inPoint ? "In" : "Out")} point at frame {_player.CurrentFrame}.");
+        return Task.CompletedTask;
+    }
+
+    private void SyncRange()
+    {
+        var duration = _player.Duration;
+        var inPoint = _player.InPoint;
+        var outPoint = _player.OutPoint;
+
+        if (inPoint is null && outPoint is null)
+        {
+            _rangeReadout.Text = "whole media";
+            _timeline.Range = null;
+            _timelineView.Invalidate();
+            return;
+        }
+
+        var start = inPoint ?? TimeSpan.Zero;
+        var end = outPoint ?? duration;
+        var usable = duration > TimeSpan.Zero && end > start;
+
+        _rangeReadout.Text = usable
+            ? $"{Timecode(FrameMath.FrameIndexAt(start, _player.FrameRate), _player.FrameRate)}"
+                + $" to {Timecode(FrameMath.FrameIndexAt(end, _player.FrameRate), _player.FrameRate)}"
+                + $"   {(end - start).TotalSeconds:0.##} s"
+            : "out before in — ignored";
+
+        _timeline.Range = usable && duration > TimeSpan.Zero
+            ? (start / duration, end / duration)
+            : null;
+
+        _timelineView.Invalidate();
     }
 
     private void ShowPickedPixel(Point? viewPoint)

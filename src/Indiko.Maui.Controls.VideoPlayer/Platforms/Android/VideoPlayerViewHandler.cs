@@ -28,6 +28,8 @@ public partial class VideoPlayerViewHandler
             [nameof(VideoPlayerView.IsMuted)] = MapVolume,
             [nameof(VideoPlayerView.Volume)] = MapVolume,
             [nameof(VideoPlayerView.IsLooping)] = MapLooping,
+            [nameof(VideoPlayerView.InPoint)] = MapRange,
+            [nameof(VideoPlayerView.OutPoint)] = MapRange,
             [nameof(VideoPlayerView.ScalingMode)] = MapScalingMode,
             [nameof(VideoPlayerView.ZoomFactor)] = MapZoom,
             [nameof(VideoPlayerView.ZoomOffset)] = MapZoom,
@@ -171,8 +173,13 @@ public partial class VideoPlayerViewHandler
     private static void MapSource(VideoPlayerViewHandler handler, VideoPlayerView view) =>
         handler.LoadSource(view.Source);
 
-    private static void MapSpeed(VideoPlayerViewHandler handler, VideoPlayerView view) =>
+    private static void MapSpeed(VideoPlayerViewHandler handler, VideoPlayerView view)
+    {
         handler._player?.SetPlaybackSpeed((float)ValueClamp.Speed(view.Speed));
+
+        // Half speed is twice as long to the out point.
+        handler.ScheduleRangeEnd();
+    }
 
     private static void MapVolume(VideoPlayerViewHandler handler, VideoPlayerView view)
     {
@@ -366,6 +373,7 @@ public partial class VideoPlayerViewHandler
             return;
 
         _displayedFrame = null;
+        StartInsideRange();
         player.SetPlaybackSpeed((float)ValueClamp.Speed(VirtualView.Speed));
         player.Play();
         StartTicker();
@@ -400,6 +408,9 @@ public partial class VideoPlayerViewHandler
         player.SeekTo((long)position.TotalMilliseconds);
 
         var reached = await request.Completion.ConfigureAwait(true);
+
+        // The seek moved the picture, so the moment the range ends moved too.
+        ScheduleRangeEnd();
 
         if (reached)
             ReportPosition(TimeSpan.FromMilliseconds(player.CurrentPosition), force: true);
@@ -487,12 +498,15 @@ public partial class VideoPlayerViewHandler
 
         StopTicker();
         _ticker.PostDelayed(_tick, IntervalMilliseconds());
+        ScheduleRangeEnd();
     }
 
     private void StopTicker()
     {
         if (_ticker is not null && _tick is not null)
             _ticker.RemoveCallbacks(_tick);
+
+        CancelRangeEnd();
     }
 
     private long IntervalMilliseconds() => Math.Max(1, 1000 / _throttle.RateHz);
@@ -504,7 +518,14 @@ public partial class VideoPlayerViewHandler
 
         if (player.IsPlaying)
         {
-            ReportPosition(TimeSpan.FromMilliseconds(player.CurrentPosition), force: false);
+            var position = TimeSpan.FromMilliseconds(player.CurrentPosition);
+            ReportPosition(position, force: false);
+
+            // The safety net: if the booked moment was missed, the range still
+            // ends here, a tick late rather than never.
+            if (Range.IsUsable(Duration) && position >= Range.End(Duration))
+                ReachedRangeEnd();
+
             _ticker.PostDelayed(_tick, IntervalMilliseconds());
         }
     }

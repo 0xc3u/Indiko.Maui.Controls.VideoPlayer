@@ -30,6 +30,12 @@ public class VideoPlayerView : View, IVideoPlayerViewController
     public static readonly BindableProperty ScalingModeProperty = BindableProperty.Create(
         nameof(ScalingMode), typeof(VideoScalingMode), typeof(VideoPlayerView), VideoScalingMode.Fit);
 
+    public static readonly BindableProperty InPointProperty = BindableProperty.Create(
+        nameof(InPoint), typeof(TimeSpan?), typeof(VideoPlayerView), null);
+
+    public static readonly BindableProperty OutPointProperty = BindableProperty.Create(
+        nameof(OutPoint), typeof(TimeSpan?), typeof(VideoPlayerView), null);
+
     public static readonly BindableProperty ZoomFactorProperty = BindableProperty.Create(
         nameof(ZoomFactor), typeof(double), typeof(VideoPlayerView), 1d, BindingMode.TwoWay,
         coerceValue: (bindable, value) =>
@@ -139,6 +145,45 @@ public class VideoPlayerView : View, IVideoPlayerViewController
         get => (VideoScalingMode)GetValue(ScalingModeProperty);
         set => SetValue(ScalingModeProperty, value);
     }
+
+    /// <summary>
+    /// Where playback begins, or null for the start of the media.
+    /// </summary>
+    /// <remarks>
+    /// An in and an out point confine <em>playback</em>, not seeking: the
+    /// picture stops at <see cref="OutPoint"/>, or jumps back here when
+    /// <see cref="IsLooping"/> is on, and an app can still seek anywhere it
+    /// likes while the range is set. Pressing play from outside the range
+    /// starts at this point.
+    /// <para>
+    /// Two seconds on repeat is the working tool of movement analysis, which
+    /// is why this is a rule about playback rather than a trimmed source: it
+    /// costs nothing to set, change or clear while the picture is running.
+    /// </para>
+    /// </remarks>
+    public TimeSpan? InPoint
+    {
+        get => (TimeSpan?)GetValue(InPointProperty);
+        set => SetValue(InPointProperty, value);
+    }
+
+    /// <summary>
+    /// Where playback stops, or null for the end of the media.
+    /// </summary>
+    /// <remarks>
+    /// The instant at the out point is the first one outside the range: a loop
+    /// that included it would show a frame from beyond the range on every pass.
+    /// A range whose out point is at or before its in point is ignored, and
+    /// the whole media plays.
+    /// </remarks>
+    public TimeSpan? OutPoint
+    {
+        get => (TimeSpan?)GetValue(OutPointProperty);
+        set => SetValue(OutPointProperty, value);
+    }
+
+    /// <summary>The range as the handlers see it.</summary>
+    internal PlaybackRange Range => new(InPoint, OutPoint);
 
     /// <summary>
     /// How much the picture is magnified, from 1 (the whole picture, as
@@ -428,6 +473,15 @@ public class VideoPlayerView : View, IVideoPlayerViewController
         // handler measures the room it has.
         ZoomOffset = new Point(next.OffsetX, next.OffsetY);
         ZoomFactor = next.Factor;
+    }
+
+    /// <summary>Clears both ends of the range, so the whole media plays again.</summary>
+    public void ClearRange()
+    {
+        VerifyMainThread();
+
+        InPoint = null;
+        OutPoint = null;
     }
 
     /// <summary>Returns to the whole picture, centred.</summary>

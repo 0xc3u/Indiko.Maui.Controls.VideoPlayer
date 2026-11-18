@@ -25,6 +25,8 @@ public class VideoPlayerViewHandler
             [nameof(VideoPlayerView.Speed)] = MapSpeed,
             [nameof(VideoPlayerView.IsMuted)] = MapVolume,
             [nameof(VideoPlayerView.Volume)] = MapVolume,
+            [nameof(VideoPlayerView.InPoint)] = MapRange,
+            [nameof(VideoPlayerView.OutPoint)] = MapRange,
             [nameof(VideoPlayerView.ScalingMode)] = MapScalingMode,
             [nameof(VideoPlayerView.ZoomFactor)] = MapZoom,
             [nameof(VideoPlayerView.ZoomOffset)] = MapZoom,
@@ -204,6 +206,31 @@ public class VideoPlayerViewHandler
             // room there is to pan changed with the gravity.
             handler.ApplyZoom();
         }
+    }
+
+    private static void MapRange(VideoPlayerViewHandler handler, VideoPlayerView view) =>
+        handler.ApplyRange();
+
+    /// <summary>
+    /// Tells the item where to stop.
+    /// </summary>
+    /// <remarks>
+    /// <c>ForwardPlaybackEndTime</c> is AVFoundation's own out point: playback
+    /// stops there and posts the same notification as the end of the item,
+    /// which is both more precise and less work than watching the clock. It
+    /// does not restrict seeking, which is exactly the behaviour the range is
+    /// documented to have.
+    /// </remarks>
+    private void ApplyRange()
+    {
+        if (_item is not { } item || _timeline is null)
+            return;
+
+        var range = VirtualView?.Range ?? PlaybackRange.None;
+
+        item.ForwardPlaybackEndTime = range.IsUsable(_timeline.Total)
+            ? CMTime.FromSeconds(range.End(_timeline.Total).TotalSeconds, TimeScale)
+            : CMTime.PositiveInfinity;
     }
 
     private static void MapZoom(VideoPlayerViewHandler handler, VideoPlayerView view) =>
@@ -536,6 +563,7 @@ public class VideoPlayerViewHandler
 
         MapVolume(this, VirtualView);
         ApplySpeed();
+        ApplyRange();
 
         if (VirtualView.AutoPlay)
             player.Play();
@@ -601,12 +629,33 @@ public class VideoPlayerViewHandler
 
     private void OnPlayedToEnd(NSNotification notification)
     {
-        Report?.OnStateChanged(VideoPlayerState.Ended);
-        Report?.OnPlaybackEnded();
+        var duration = _timeline?.Total ?? TimeSpan.Zero;
+        var range = VirtualView.Range;
+        var ranged = range.IsUsable(duration);
+
+        // An out point short of the end of the media is not the end of
+        // anything: the app asked playback to stop there, so the state is
+        // paused and PlaybackEnded stays quiet.
+        if (ranged && range.End(duration) < duration)
+        {
+            // The picture sits on the frame that begins at the out point,
+            // which is where AVFoundation leaves it and where the Android
+            // handler seeks to, so both report the same thing.
+            ReportPosition(range.End(duration), force: true);
+            Report?.OnStateChanged(VideoPlayerState.Paused);
+        }
+        else
+        {
+            Report?.OnStateChanged(VideoPlayerState.Ended);
+            Report?.OnPlaybackEnded();
+        }
 
         if (VirtualView.IsLooping && _player is { } player)
         {
-            player.Seek(CMTime.Zero, CMTime.Zero, CMTime.Zero);
+            var start = ranged ? range.Start(duration) : TimeSpan.Zero;
+
+            player.Seek(
+                CMTime.FromSeconds(start.TotalSeconds, TimeScale), CMTime.Zero, CMTime.Zero);
             player.Play();
         }
     }
@@ -642,6 +691,7 @@ public class VideoPlayerViewHandler
         if (_player is not { } player)
             return;
 
+        StartInsideRange(player);
         ApplySpeed();
 
         // DefaultRate only applies from iOS 16; below it, playing at a rate
@@ -653,6 +703,25 @@ public class VideoPlayerViewHandler
     }
 
     public void Pause() => _player?.Pause();
+
+    /// <summary>
+    /// Moves to the start of the range before playing, when the picture is
+    /// outside it. Pressing play on a range is a request to play the range.
+    /// </summary>
+    private void StartInsideRange(AVPlayer player)
+    {
+        var duration = _timeline?.Total ?? TimeSpan.Zero;
+        var range = VirtualView.Range;
+
+        if (!range.IsUsable(duration))
+            return;
+
+        var position = TimeSpan.FromSeconds(player.CurrentTime.Seconds);
+        var resume = range.Resume(position, duration);
+
+        if (resume != position)
+            player.Seek(CMTime.FromSeconds(resume.TotalSeconds, TimeScale), CMTime.Zero, CMTime.Zero);
+    }
 
     public void Stop()
     {

@@ -47,6 +47,9 @@ public sealed class TimelineDrawable : IDrawable
 
     public bool IsLive { get; set; }
 
+    /// <summary>The in and out points as fractions of the timeline, when set.</summary>
+    public (double Start, double End)? Range { get; set; }
+
     public void Draw(ICanvas canvas, RectF rect)
     {
         var midY = rect.Center.Y;
@@ -59,6 +62,23 @@ public sealed class TimelineDrawable : IDrawable
 
         canvas.FillColor = Ink.Muted;
         canvas.FillRoundedRectangle(0, midY - trackHeight / 2, played, trackHeight, 1.5f);
+
+        // The range is drawn on the track itself in the measuring colour: it is
+        // a statement about the media, like the seams, rather than about where
+        // the playhead happens to be.
+        if (Range is { } range)
+        {
+            var start = (float)Math.Clamp(range.Start, 0, 1) * rect.Width;
+            var end = (float)Math.Clamp(range.End, 0, 1) * rect.Width;
+
+            canvas.FillColor = Ink.Measure;
+            canvas.FillRoundedRectangle(start, midY - trackHeight / 2, Math.Max(2f, end - start), trackHeight, 1.5f);
+
+            canvas.StrokeColor = Ink.Measure;
+            canvas.StrokeSize = 1.5f;
+            canvas.DrawLine(start, midY + 3, start, midY + 9);
+            canvas.DrawLine(end, midY + 3, end, midY + 9);
+        }
 
         // Seams sit above the track, not on it, so they stay readable once the
         // played portion passes them.

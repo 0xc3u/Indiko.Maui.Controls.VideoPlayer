@@ -188,6 +188,41 @@ seek asked for rather than the frame it displays, so the Android handler tracks
 the frame on screen and reports that frame's start — otherwise a frame counter
 driven from `Position` disagrees with what the viewer can read.
 
+## In and out points
+
+```csharp
+player.InPoint = TimeSpan.FromSeconds(12);
+player.OutPoint = TimeSpan.FromSeconds(14);
+player.IsLooping = true;          // those two seconds, over and over
+player.ClearRange();              // the whole media again
+```
+
+Two seconds on repeat is the working tool of movement analysis, so the range is
+a rule about **playback** rather than a trimmed source: it costs nothing to
+set, change or clear while the picture is running, and seeking is left alone —
+the scrubber still reaches the whole media.
+
+- Playback stops at the out point, or jumps back to the in point while
+  `IsLooping` is on.
+- Pressing play from outside the range starts at the in point.
+- Either end may be left out: an in point alone runs to the end of the media,
+  an out point alone from the beginning.
+- A range whose out point is at or before its in point is ignored, and the
+  whole media plays. It is refused rather than quietly swapped, because an app
+  that computed its two points the wrong way round should see that at once.
+
+The instant at the out point is the first one *outside* the range, so a loop
+plays the frames up to it and never the one that begins there. Stopping is the
+other way round: playback stops **on** the out point, which leaves the frame
+that begins there on screen — that is where AVFoundation halts of its own
+accord, and the Android handler seeks to the same place rather than inventing
+a second answer.
+
+Android has no equivalent of AVFoundation's `forwardPlaybackEndTime`, so the
+handler works out when playback is due to reach the out point and books that
+moment. Watching the position tick would do it too, but at 15 Hz the picture
+runs up to 66 ms — two frames — past the out point before a loop notices.
+
 ## Frames, points and stills
 
 Three things an analysis app needs that a player normally keeps to itself.
@@ -305,7 +340,9 @@ transform, inside a clipping container.
 | `Speed` | `double` | `1.0` | clamped to 0.1–2.0 |
 | `Volume` | `double` | `1.0` | clamped to 0–1 |
 | `IsMuted` | `bool` | `false` | |
-| `IsLooping` | `bool` | `false` | |
+| `IsLooping` | `bool` | `false` | loops the range when one is set, else the media |
+| `InPoint` | `TimeSpan?` | `null` | where playback begins |
+| `OutPoint` | `TimeSpan?` | `null` | where it stops, or loops from |
 | `ScalingMode` | `VideoScalingMode` | `Fit` | `Fit`, `Fill`, `Stretch` |
 | `ZoomFactor` | `double` | `1.0` | clamped to 1–`MaximumZoom`, two-way |
 | `ZoomOffset` | `Point` | `Zero` | clamped to the picture's edges, two-way |
@@ -337,6 +374,7 @@ container.
 | `Point? ToPicturePoint(Point)` `Point? ToViewPoint(Point)` | control ↔ frame pixel, through the scaling mode and the zoom |
 | `Task<byte[]?> CaptureFrameAsync(CancellationToken = default)` | the frame as recorded, as a PNG |
 | `BeginScrub()` `ScrubTo(TimeSpan)` `EndScrub()` | fast while dragging, exact on release |
+| `ClearRange()` | forgets both the in and the out point |
 | `ZoomTo(double factor)` | magnifies about the middle, carrying the pan with it |
 | `ResetZoom()` | back to the whole picture, centred |
 
@@ -437,7 +475,8 @@ numbered frames with ImageMagick instead. Nothing it writes is committed.
 API and shows the numbers needed to check the claims: position, duration,
 chapter, frame rate, size, the frame on screen (both as reported and as the old
 calculation would have had it), the magnification and pan, the pixel under the
-last tap, and the measured event rate. Generate the footage first:
+last tap, the range drawn on the scrubber, and the measured event rate.
+Generate the footage first:
 
 ```sh
 scripts/make-test-videos.sh --quick --install-sample
