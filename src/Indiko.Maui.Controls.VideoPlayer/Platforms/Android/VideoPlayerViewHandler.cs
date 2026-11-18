@@ -38,6 +38,11 @@ public partial class VideoPlayerViewHandler
 
     private readonly SeekCoordinator _seeks = new();
 
+    // Media3 decodes to a surface and hands out no frames, so grabbing one
+    // means opening the clip a second time. These are the URIs that were
+    // already resolved and permission-checked at load, by chapter index.
+    private readonly List<AndroidUri> _chapterUris = [];
+
     private IExoPlayer? _player;
     private PlayerListener? _listener;
     private Handler? _ticker;
@@ -220,6 +225,7 @@ public partial class VideoPlayerViewHandler
         _seeks.CancelPending();
         player.Stop();
         player.ClearMediaItems();
+        _chapterUris.Clear();
         _timeline = null;
         _displayedFrame = null;
         _throttle.Reset();
@@ -245,6 +251,7 @@ public partial class VideoPlayerViewHandler
 
             var duration = ReadDuration(uri!);
             durations.Add(duration);
+            _chapterUris.Add(uri!);
 
             builder.Add(MediaItem.FromUri(uri!), (long)duration.TotalMilliseconds);
         }
@@ -400,21 +407,19 @@ public partial class VideoPlayerViewHandler
         return reached;
     }
 
-    public async Task<bool> StepFrameAsync(int frames)
+    public async Task<bool> SeekToFrameAsync(long frame, CancellationToken cancellationToken)
     {
         if (_player is not { } player || _timeline is null)
             return false;
 
         player.Pause();
 
-        var position = TimeSpan.FromMilliseconds(player.CurrentPosition);
-        var current = _displayedFrame ?? FrameMath.FrameIndexAt(position, _frameRate);
-        var wanted = Math.Max(0, current + frames);
+        var wanted = Math.Max(0, frame);
 
         var target = FrameMath.SeekTargetForFrame(
             wanted, _frameRate, _timeline.Total, FrameSeekSemantics.AtOrAfter);
 
-        var reached = await SeekExactAsync(target, CancellationToken.None).ConfigureAwait(true);
+        var reached = await SeekExactAsync(target, cancellationToken).ConfigureAwait(true);
 
         if (!reached)
             return false;
@@ -426,6 +431,17 @@ public partial class VideoPlayerViewHandler
         // Position would otherwise disagree with what the viewer reads on screen.
         ReportPosition(FrameMath.FrameStartTime(wanted, _frameRate), force: true);
         return true;
+    }
+
+    public Task<bool> StepFrameAsync(int frames)
+    {
+        if (_player is not { } player || _timeline is null)
+            return Task.FromResult(false);
+
+        var position = TimeSpan.FromMilliseconds(player.CurrentPosition);
+        var current = _displayedFrame ?? FrameMath.FrameIndexAt(position, _frameRate);
+
+        return SeekToFrameAsync(current + frames, CancellationToken.None);
     }
 
     public void BeginScrub()
@@ -505,7 +521,14 @@ public partial class VideoPlayerViewHandler
             return;
 
         var (index, local) = _timeline.ToLocal(position);
-        Report?.OnPositionChanged(position, index, local);
+
+        // The tracked frame when there is one: Media3 reports the position a
+        // seek asked for, which sits half a frame below the frame it displays,
+        // so deriving the number from the position would be off by one exactly
+        // where it matters most.
+        var frame = _displayedFrame ?? FrameMath.FrameIndexAt(position, _frameRate);
+
+        Report?.OnPositionChanged(position, index, local, frame);
     }
 
     private void Fail(VideoErrorCode code, int chapterIndex, string message) =>
@@ -522,8 +545,14 @@ public partial class VideoPlayerViewHandler
         var format = player.VideoFormat;
         _frameRate = format?.FrameRate > 0 ? format.FrameRate : 0d;
 
+        // Rotation lives in the metadata, not in the coded picture: a phone
+        // held upright records 1920x1080 with a quarter turn recorded beside
+        // it. NaturalSize is the picture as displayed, which is what an app
+        // mapping a tap onto a pixel needs, so the turn is applied here.
+        var turned = format is not null && (format.RotationDegrees == 90 || format.RotationDegrees == 270);
+
         var size = format is not null && format.Width > 0 && format.Height > 0
-            ? new Size(format.Width, format.Height)
+            ? new Size(turned ? format.Height : format.Width, turned ? format.Width : format.Height)
             : Size.Zero;
 
         Report?.OnMediaOpened(duration, _frameRate, size, _timeline.ChapterDurations);

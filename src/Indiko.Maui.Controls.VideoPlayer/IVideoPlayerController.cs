@@ -22,7 +22,15 @@ internal interface IVideoPlayerController
 
     Task<bool> SeekExactAsync(TimeSpan position, CancellationToken cancellationToken);
 
+    Task<bool> SeekToFrameAsync(long frame, CancellationToken cancellationToken);
+
     Task<bool> StepFrameAsync(int frames);
+
+    Point? ToPicturePoint(Point viewPoint);
+
+    Point? ToViewPoint(Point picturePoint);
+
+    Task<byte[]?> CaptureFrameAsync(CancellationToken cancellationToken);
 
     void BeginScrub();
 
@@ -37,7 +45,7 @@ internal interface IVideoPlayerController
 /// </summary>
 internal interface IVideoPlayerViewController
 {
-    void OnPositionChanged(TimeSpan position, int chapterIndex, TimeSpan chapterPosition);
+    void OnPositionChanged(TimeSpan position, int chapterIndex, TimeSpan chapterPosition, long frame);
 
     void OnMediaOpened(TimeSpan duration, double frameRate, Size naturalSize, IReadOnlyList<TimeSpan> chapterDurations);
 

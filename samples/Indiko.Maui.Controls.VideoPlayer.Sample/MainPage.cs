@@ -55,7 +55,19 @@ public class MainPage : ContentPage
     private readonly Entry _seekEntry;
 
     private readonly Label _zoomReadout = Numeric(13, Type.Mono, text: "1.00×");
+    private readonly Label _derived = Numeric(13, Type.Mono);
+    private readonly Label _picked = Numeric(13, Type.Mono, text: "tap the picture");
+    private readonly Label _grab = Numeric(13, Type.Mono);
+    private readonly Image _still = new()
+    {
+        HeightRequest = 92,
+        Aspect = Aspect.AspectFit,
+        HorizontalOptions = LayoutOptions.Start,
+        IsVisible = false,
+    };
+
     private Button? _pinchButton;
+    private readonly Entry _frameEntry;
 
     private readonly Label _empty = new()
     {
@@ -151,6 +163,26 @@ public class MainPage : ContentPage
             WidthRequest = 110,
         };
 
+        _frameEntry = new Entry
+        {
+            Placeholder = "frame",
+            Keyboard = Keyboard.Numeric,
+            TextColor = Ink.Text,
+            PlaceholderColor = Ink.Faint,
+            BackgroundColor = Ink.Well,
+            FontFamily = Type.Mono,
+            FontSize = 14,
+            HeightRequest = 44,
+            WidthRequest = 110,
+        };
+
+        // Tapping the picture reads the pixel under the finger. It is also the
+        // proof that the package's own gestures leave an app's alone: this
+        // fires while pinch-to-zoom is on.
+        var pick = new TapGestureRecognizer();
+        pick.Tapped += (_, e) => ShowPickedPixel(e.GetPosition(_player));
+        _player.GestureRecognizers.Add(pick);
+
         Content = new ScrollView
         {
             Content = new VerticalStackLayout
@@ -165,6 +197,8 @@ public class MainPage : ContentPage
                     Section("Playback", SpeedAndRate()),
                     Hairline(),
                     Section("Zoom", ZoomControls()),
+                    Hairline(),
+                    Section("Frame and picture", FrameControls()),
                     Hairline(),
                     Section("Source", SourceControls()),
                     Hairline(),
@@ -414,6 +448,30 @@ public class MainPage : ContentPage
         return stack;
     }
 
+    private View FrameControls()
+    {
+        var stack = new VerticalStackLayout { Spacing = 14 };
+
+        var jump = new HorizontalStackLayout { Spacing = 8 };
+        jump.Add(_frameEntry);
+        jump.Add(Action("Go", SeekToFrameAsync));
+        stack.Children.Add(Labelled("Jump to a frame number", jump));
+
+        var grab = new HorizontalStackLayout { Spacing = 10 };
+        grab.Add(Action("Capture frame", CaptureAsync));
+        grab.Add(_still);
+        stack.Children.Add(Labelled("The frame as recorded, not as drawn", grab));
+        stack.Children.Add(_grab);
+
+        stack.Children.Add(Detail(
+            "The captured PNG is the full resolution of the footage and ignores the "
+            + "magnification, so the thumbnail stays the whole frame however far the "
+            + "picture is zoomed in. Tap the picture above to read the pixel under "
+            + "your finger; it follows the zoom and the pan."));
+
+        return stack;
+    }
+
     private View SourceControls()
     {
         var stack = new VerticalStackLayout { Spacing = 14 };
@@ -483,6 +541,8 @@ public class MainPage : ContentPage
             Reading("Media", _format),
             Reading("Event rate", _events),
             Reading("Zoom", _zoomReadout),
+            Reading("From the clock", _derived),
+            Reading("Picked pixel", _picked),
         },
     };
 
@@ -668,12 +728,17 @@ public class MainPage : ContentPage
         Say($"Magnification {_player.ZoomFactor:0.##}× of at most {_player.MaximumZoom:0.##}×.");
     }
 
-    private static string Timecode(TimeSpan position, double frameRate)
+    // Counted from the frame number rather than from the clock, so the
+    // timecode and the frame readout cannot disagree: a frame boundary is not
+    // representable in ticks at every rate, and reading the seconds off a
+    // position that sits a few microseconds below one shows the second before.
+    // Non-drop-frame, so at 29.97 it drifts from the wall clock by design.
+    private static string Timecode(long frame, double frameRate)
     {
-        var fps = FrameMath.EffectiveFrameRate(frameRate);
-        var frames = FrameMath.FrameIndexAt(position, fps) % (long)Math.Round(fps);
+        var fps = Math.Max(1, (long)Math.Round(FrameMath.EffectiveFrameRate(frameRate)));
+        var seconds = frame / fps;
 
-        return $"{position.Hours:00}:{position.Minutes:00}:{position.Seconds:00}:{frames:00}";
+        return $"{seconds / 3600:00}:{seconds / 60 % 60:00}:{seconds % 60:00}:{frame % fps:00}";
     }
 
     private void Say(string message) => _message.Text = message;
@@ -808,6 +873,58 @@ public class MainPage : ContentPage
         return button;
     }
 
+    private async Task SeekToFrameAsync()
+    {
+        if (!long.TryParse(_frameEntry.Text, out var frame))
+        {
+            Say("Type a frame number to jump to.");
+            return;
+        }
+
+        var reached = await _player.SeekToFrameAsync(frame);
+        Say(reached
+            ? $"Asked for frame {frame}. The picture should read the same."
+            : "A newer seek overtook this one.");
+    }
+
+    private async Task CaptureAsync()
+    {
+        var png = await _player.CaptureFrameAsync();
+
+        if (png is null)
+        {
+            _still.IsVisible = false;
+            _grab.Text = "nothing captured";
+            Say("No frame to capture — load a source first.");
+            return;
+        }
+
+        _still.Source = ImageSource.FromStream(() => new MemoryStream(png));
+        _still.IsVisible = true;
+        _grab.Text = $"PNG, {png.Length / 1024.0:0.#} kB, frame {_player.CurrentFrame}";
+        Say("Captured the frame at full resolution.");
+    }
+
+    private void ShowPickedPixel(Point? viewPoint)
+    {
+        if (viewPoint is not { } point)
+        {
+            _picked.Text = "no position";
+            return;
+        }
+
+        if (_player.ToPicturePoint(point) is not { } pixel)
+        {
+            _picked.Text = "not measured yet";
+            return;
+        }
+
+        var size = _player.NaturalSize;
+        var inside = pixel.X >= 0 && pixel.Y >= 0 && pixel.X <= size.Width && pixel.Y <= size.Height;
+
+        _picked.Text = $"{pixel.X:0}, {pixel.Y:0}{(inside ? string.Empty : "   outside")}";
+    }
+
     private async Task SeekToEntryAsync()
     {
         if (!double.TryParse(_seekEntry.Text, out var seconds))
@@ -833,7 +950,7 @@ public class MainPage : ContentPage
         var rate = e.FrameRate > 0 ? $"{e.FrameRate:0.###} fps" : "frame rate unknown";
 
         _format.Text = $"{rate}   {size}   {e.ChapterDurations.Count} chapter{(e.ChapterDurations.Count == 1 ? "" : "s")}";
-        _duration.Text = $"of {Timecode(e.Duration, e.FrameRate)}";
+        _duration.Text = $"of {Timecode(FrameMath.FrameIndexAt(e.Duration, e.FrameRate), e.FrameRate)}";
 
         if (e.ChapterDurations.Count > 1 && e.Duration > TimeSpan.Zero)
         {
@@ -891,8 +1008,15 @@ public class MainPage : ContentPage
     {
         var fps = _player.FrameRate;
 
-        _timecode.Text = Timecode(e.Position, fps);
-        _frame.Text = fps > 0 ? FrameMath.FrameIndexAt(e.Position, fps).ToString() : "—";
+        _timecode.Text = Timecode(e.Frame, fps);
+
+        // Reported by the handler rather than derived here. The row below shows
+        // what the old calculation would have said, which is how the half-frame
+        // the two platforms disagree about becomes visible instead of silent.
+        _frame.Text = e.Frame.ToString();
+        _derived.Text = fps > 0
+            ? $"frame {FrameMath.FrameIndexAt(e.Position, fps)}   of {e.Frame} reported"
+            : "—";
         _chapter.Text = _chapterCount > 1
             ? $"chapter {e.ChapterIndex + 1} of {_chapterCount}"
             : "one chapter";

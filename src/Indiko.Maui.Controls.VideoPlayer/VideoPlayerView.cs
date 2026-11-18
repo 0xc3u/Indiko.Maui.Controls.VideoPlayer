@@ -83,6 +83,9 @@ public class VideoPlayerView : View, IVideoPlayerViewController
     private static readonly BindablePropertyKey NaturalSizePropertyKey = BindableProperty.CreateReadOnly(
         nameof(NaturalSize), typeof(Size), typeof(VideoPlayerView), Size.Zero);
 
+    private static readonly BindablePropertyKey CurrentFramePropertyKey = BindableProperty.CreateReadOnly(
+        nameof(CurrentFrame), typeof(long), typeof(VideoPlayerView), 0L);
+
     private static readonly BindablePropertyKey CurrentChapterIndexPropertyKey = BindableProperty.CreateReadOnly(
         nameof(CurrentChapterIndex), typeof(int), typeof(VideoPlayerView), 0);
 
@@ -92,6 +95,7 @@ public class VideoPlayerView : View, IVideoPlayerViewController
     public static readonly BindableProperty IsPlayingProperty = IsPlayingPropertyKey.BindableProperty;
     public static readonly BindableProperty FrameRateProperty = FrameRatePropertyKey.BindableProperty;
     public static readonly BindableProperty NaturalSizeProperty = NaturalSizePropertyKey.BindableProperty;
+    public static readonly BindableProperty CurrentFrameProperty = CurrentFramePropertyKey.BindableProperty;
     public static readonly BindableProperty CurrentChapterIndexProperty = CurrentChapterIndexPropertyKey.BindableProperty;
 
     /// <summary>
@@ -276,6 +280,25 @@ public class VideoPlayerView : View, IVideoPlayerViewController
         private set => SetValue(NaturalSizePropertyKey, value);
     }
 
+    /// <summary>
+    /// The zero-based number of the frame on screen, as the handler knows it
+    /// rather than as the app would have to guess it.
+    /// </summary>
+    /// <remarks>
+    /// Not the same thing as <see cref="Position"/> times the frame rate. The
+    /// two platforms disagree about which frame a seek shows, and Media3
+    /// reports the position a seek asked for rather than the one it landed on,
+    /// so the Android handler tracks the displayed frame itself. Reading it
+    /// here is the only way to get the number the viewer can see burnt into the
+    /// picture. On variable frame rate material it is still derived from a
+    /// single frame rate and is therefore approximate.
+    /// </remarks>
+    public long CurrentFrame
+    {
+        get => (long)GetValue(CurrentFrameProperty);
+        private set => SetValue(CurrentFramePropertyKey, value);
+    }
+
     /// <summary>Which clip of <see cref="Source"/> is playing.</summary>
     public int CurrentChapterIndex
     {
@@ -355,6 +378,28 @@ public class VideoPlayerView : View, IVideoPlayerViewController
     }
 
     /// <summary>
+    /// Seeks so that frame <paramref name="frame"/> is the one on screen,
+    /// pausing first.
+    /// </summary>
+    /// <remarks>
+    /// Analysis counts in frames, and converting a frame number to a position
+    /// is exactly the calculation the two platforms disagree about. Handing the
+    /// number over instead of a time keeps that disagreement inside the
+    /// handlers, where it is already solved.
+    /// </remarks>
+    /// <returns>
+    /// <c>false</c> when a newer seek overtook this one or nothing is loaded.
+    /// </returns>
+    public Task<bool> SeekToFrameAsync(long frame, CancellationToken cancellationToken = default)
+    {
+        VerifyMainThread();
+
+        return Controller is { } controller
+            ? controller.SeekToFrameAsync(frame < 0 ? 0 : frame, cancellationToken)
+            : Task.FromResult(false);
+    }
+
+    /// <summary>
     /// Steps <paramref name="frames"/> frames forward (positive) or back
     /// (negative), pausing first. Steps across chapter boundaries.
     /// </summary>
@@ -411,6 +456,65 @@ public class VideoPlayerView : View, IVideoPlayerViewController
         Controller?.ScrubTo(ValueClamp.Position(position, Duration));
     }
 
+    /// <summary>
+    /// The pixel of the frame under a point on the control, or null before
+    /// anything has been laid out and opened.
+    /// </summary>
+    /// <remarks>
+    /// Accounts for <see cref="ScalingMode"/>, the letterbox it produces, the
+    /// rotation the footage was recorded with, and the current
+    /// <see cref="ZoomFactor"/> and <see cref="ZoomOffset"/> — so an annotation
+    /// placed with this stays on the same part of the picture when the control
+    /// is resized or the picture is magnified.
+    /// <para>
+    /// A point outside the picture maps to a pixel outside the frame rather
+    /// than to null: a caller hit-testing a tap can see that for itself, and
+    /// one drawing a line that leaves the picture needs the far end of it.
+    /// </para>
+    /// </remarks>
+    public Point? ToPicturePoint(Point viewPoint)
+    {
+        VerifyMainThread();
+        return Controller?.ToPicturePoint(viewPoint);
+    }
+
+    /// <summary>
+    /// Where a pixel of the frame is drawn on the control, or null before
+    /// anything has been laid out and opened. The inverse of
+    /// <see cref="ToPicturePoint"/>.
+    /// </summary>
+    public Point? ToViewPoint(Point picturePoint)
+    {
+        VerifyMainThread();
+        return Controller?.ToViewPoint(picturePoint);
+    }
+
+    /// <summary>
+    /// The frame on screen, encoded as a PNG at the resolution of the footage.
+    /// </summary>
+    /// <remarks>
+    /// The frame as recorded, not as drawn: full resolution, and without the
+    /// magnification, the scaling mode or anything the app has drawn over the
+    /// control. That is what a report or a measurement wants — a screenshot of
+    /// the control would be a picture of a phone screen instead of evidence.
+    /// <para>
+    /// PNG rather than JPEG because the point of the thing is to be looked at
+    /// closely, and because compression artefacts in a frame someone is
+    /// measuring are indistinguishable from the thing being measured. A 4K
+    /// frame runs to several megabytes; decoding one takes long enough to be
+    /// worth awaiting rather than blocking a tap on.
+    /// </para>
+    /// </remarks>
+    /// <returns>PNG bytes, or null when nothing is loaded or the frame could not be decoded.</returns>
+    public Task<byte[]?> CaptureFrameAsync(CancellationToken cancellationToken = default)
+    {
+        VerifyMainThread();
+
+        return Controller is { } controller
+            ? controller.CaptureFrameAsync(cancellationToken)
+            : Task.FromResult<byte[]?>(null);
+    }
+
     /// <summary>Ends a scrub with an exact seek to the position last scrubbed to.</summary>
     public void EndScrub()
     {
@@ -418,11 +522,15 @@ public class VideoPlayerView : View, IVideoPlayerViewController
         Controller?.EndScrub();
     }
 
-    void IVideoPlayerViewController.OnPositionChanged(TimeSpan position, int chapterIndex, TimeSpan chapterPosition)
+    void IVideoPlayerViewController.OnPositionChanged(
+        TimeSpan position, int chapterIndex, TimeSpan chapterPosition, long frame)
     {
         Position = position;
         CurrentChapterIndex = chapterIndex;
-        PositionChanged?.Invoke(this, new VideoPositionChangedEventArgs(position, chapterIndex, chapterPosition));
+        CurrentFrame = frame;
+
+        PositionChanged?.Invoke(
+            this, new VideoPositionChangedEventArgs(position, chapterIndex, chapterPosition, frame));
     }
 
     void IVideoPlayerViewController.OnMediaOpened(

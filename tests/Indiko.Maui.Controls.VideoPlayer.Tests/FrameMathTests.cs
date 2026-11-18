@@ -57,6 +57,54 @@ public class FrameMathTests
         Assert.Equal(0, FrameMath.FrameIndexAt(TimeSpan.FromSeconds(-5), 30));
     }
 
+    [Theory]
+    [InlineData(30, 30, 1)]
+    [InlineData(1350, 30, 45)]
+    [InlineData(1800, 30, 60)]
+    [InlineData(25, 25, 1)]
+    [InlineData(3000, 50, 60)]
+    [InlineData(29970, 29.97, 1000)]
+    public void A_frame_begins_exactly_where_the_frame_rate_says(
+        long index, double fps, double expectedSeconds)
+    {
+        // Accumulating a frame duration rounded to whole ticks drifts: at 30 fps
+        // a frame is 333333.33 ticks and 1350 of the rounded ones land 45
+        // microseconds early, which is enough to put the position in the second
+        // before the one the frame belongs to.
+        Assert.Equal(expectedSeconds, FrameMath.FrameStartTime(index, fps).TotalSeconds, 6);
+    }
+
+    [Theory]
+    [InlineData(0, 30)]
+    [InlineData(1, 30)]
+    [InlineData(1350, 30)]
+    [InlineData(108000, 30)]
+    [InlineData(1000000, 30)]
+    [InlineData(1000000, 29.97)]
+    [InlineData(500000, 23.976)]
+    [InlineData(777777, 59.94)]
+    public void A_frame_start_reads_back_as_that_frame_however_far_in(long index, double fps)
+    {
+        Assert.Equal(index, FrameMath.FrameIndexAt(FrameMath.FrameStartTime(index, fps), fps));
+    }
+
+    [Theory]
+    [InlineData(1350, 30)]
+    [InlineData(108000, 30)]
+    [InlineData(1000000, 29.97)]
+    public void A_seek_target_stays_inside_the_frame_it_was_asked_for(long index, double fps)
+    {
+        var duration = TimeSpan.FromHours(12);
+
+        Assert.Equal(index, FrameMath.FrameIndexAt(
+            FrameMath.SeekTargetForFrame(index, fps, duration), fps));
+
+        // AtOrAfter aims half a frame short, so the frame it lands in is the
+        // one before: the player then shows the frame that was asked for.
+        Assert.Equal(index - 1, FrameMath.FrameIndexAt(
+            FrameMath.SeekTargetForFrame(index, fps, duration, FrameSeekSemantics.AtOrAfter), fps));
+    }
+
     [Fact]
     public void StepTarget_lands_in_the_middle_of_the_requested_frame()
     {

@@ -188,6 +188,64 @@ seek asked for rather than the frame it displays, so the Android handler tracks
 the frame on screen and reports that frame's start — otherwise a frame counter
 driven from `Position` disagrees with what the viewer can read.
 
+## Frames, points and stills
+
+Three things an analysis app needs that a player normally keeps to itself.
+
+### The frame on screen
+
+```csharp
+player.CurrentFrame;                    // zero-based, as the handler knows it
+await player.SeekToFrameAsync(1350);    // put frame 1350 on screen
+```
+
+`CurrentFrame` is not `Position` times the frame rate. The platforms disagree
+about which frame a seek shows, and Media3 reports the position a seek asked
+for rather than the one it landed on, so the Android handler tracks the
+displayed frame itself and reports that. `PositionChanged` carries the same
+number as `Frame`, so a frame counter drawn from the event cannot drift from
+the picture.
+
+Seeking by frame number keeps that disagreement inside the handlers.
+`SeekToFrameAsync` pauses first and returns `false` when a newer seek overtook
+it, exactly like `SeekExactAsync`.
+
+### A point on the control, a pixel in the frame
+
+```csharp
+var pixel = player.ToPicturePoint(e.GetPosition(player) ?? default);
+var onScreen = player.ToViewPoint(new Point(640, 360));
+```
+
+Everything drawn over a video — a line between two players, a circle around a
+number plate, the angle of a joint — has to survive the control being resized,
+the scaling mode changing and the picture being magnified and panned. These two
+account for all of it, including the rotation the footage was recorded with, so
+an annotation placed once stays on the same part of the picture.
+
+Both answer `null` until the control has been laid out and a source opened. A
+point outside the picture maps to a pixel outside the frame rather than to
+`null`: a caller hit-testing a tap can see that for itself, and one drawing a
+line that leaves the picture needs the far end of it.
+
+### A still of the frame
+
+```csharp
+byte[]? png = await player.CaptureFrameAsync();
+```
+
+The frame as recorded, not as drawn: the full resolution of the footage,
+without the magnification, the scaling mode, or anything the app has drawn over
+the control. A screenshot of the control would be a picture of a phone screen;
+this is the evidence. PNG rather than JPEG, because compression artefacts in a
+frame someone is measuring are indistinguishable from the thing being measured.
+
+A 4K still runs to several megabytes and decoding one takes long enough to be
+worth awaiting rather than blocking a tap on. On iOS it comes from the same
+composition the player is using; on Android, where Media3 decodes to a surface
+and hands out no frames, the clip is opened a second time and the frame pulled
+from it.
+
 ## Zoom
 
 `ZoomFactor` magnifies the picture, from 1 — the whole picture, as
@@ -258,8 +316,12 @@ transform, inside a clipping container.
 | `PauseWhenInBackground` | `bool` | `true` | never resumes by itself |
 | `AllowNetworkAccess` | `bool` | `false` | iOS, iCloud downloads |
 
-Read-only: `Position`, `Duration`, `State`, `IsPlaying`, `FrameRate`,
-`NaturalSize`, `CurrentChapterIndex`, `ChapterDurations`.
+Read-only: `Position`, `CurrentFrame`, `Duration`, `State`, `IsPlaying`,
+`FrameRate`, `NaturalSize`, `CurrentChapterIndex`, `ChapterDurations`.
+
+`NaturalSize` is the picture as displayed, after the rotation the camera
+recorded: a phone held upright reports 1080x1920, not the 1920x1080 in the
+container.
 
 `State` is `Idle`, `Opening`, `Ready`, `Playing`, `Paused`, `Buffering`,
 `Ended` or `Failed`.
@@ -270,7 +332,10 @@ Read-only: `Position`, `Duration`, `State`, `IsPlaying`, `FrameRate`,
 |---|---|
 | `Play()` `Pause()` `Stop()` | `Stop` also returns to the start |
 | `Task<bool> SeekExactAsync(TimeSpan, CancellationToken = default)` | `false` when overtaken or cancelled |
+| `Task<bool> SeekToFrameAsync(long frame, CancellationToken = default)` | pauses first; the frame, not the time |
 | `Task<bool> StepFrameAsync(int frames)` | pauses first, crosses chapters |
+| `Point? ToPicturePoint(Point)` `Point? ToViewPoint(Point)` | control ↔ frame pixel, through the scaling mode and the zoom |
+| `Task<byte[]?> CaptureFrameAsync(CancellationToken = default)` | the frame as recorded, as a PNG |
 | `BeginScrub()` `ScrubTo(TimeSpan)` `EndScrub()` | fast while dragging, exact on release |
 | `ZoomTo(double factor)` | magnifies about the middle, carrying the pan with it |
 | `ResetZoom()` | back to the whole picture, centred |
@@ -289,7 +354,7 @@ wrong.
 
 | | |
 |---|---|
-| `PositionChanged` | at `PositionUpdateRate`, plus once after every seek or step |
+| `PositionChanged` | at `PositionUpdateRate`, plus once after every seek or step; carries `Frame` |
 | `MediaOpened` | duration, frame rate, size, chapter durations |
 | `MediaFailed` | error code, chapter, message |
 | `PlaybackEnded` `StateChanged` | |
@@ -320,7 +385,8 @@ depending on the upper end. The sample app shows the live rate.
 ## Limits
 
 - **Variable frame rate.** Stepping assumes a fixed frame duration, so on VFR
-  material it is approximate. The frame rate is read from the format; when the
+  material it is approximate — and so, for the same reason, are `CurrentFrame`
+  and `SeekToFrameAsync`. The frame rate is read from the format; when the
   container does not report one the control falls back to 30 fps.
 - **HEVC backwards.** Stepping back through B-frames makes the decoder walk
   past frames it has not displayed. It works, but it is the slowest path.
@@ -369,8 +435,9 @@ numbered frames with ImageMagick instead. Nothing it writes is committed.
 
 `samples/Indiko.Maui.Controls.VideoPlayer.Sample` exercises every part of the
 API and shows the numbers needed to check the claims: position, duration,
-chapter, frame rate, size, the frame number expected on screen, the magnification
-and pan, and the measured event rate. Generate the footage first:
+chapter, frame rate, size, the frame on screen (both as reported and as the old
+calculation would have had it), the magnification and pan, the pixel under the
+last tap, and the measured event rate. Generate the footage first:
 
 ```sh
 scripts/make-test-videos.sh --quick --install-sample

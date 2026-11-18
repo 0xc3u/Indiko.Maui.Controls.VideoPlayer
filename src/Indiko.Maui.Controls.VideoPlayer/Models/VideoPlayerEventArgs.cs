@@ -4,6 +4,11 @@ namespace Indiko.Maui.Controls.VideoPlayer.Models;
 public sealed class VideoPositionChangedEventArgs(TimeSpan position, int chapterIndex, TimeSpan chapterPosition)
     : EventArgs
 {
+    /// <param name="frame">The frame on screen, as the handler knows it.</param>
+    public VideoPositionChangedEventArgs(
+        TimeSpan position, int chapterIndex, TimeSpan chapterPosition, long frame)
+        : this(position, chapterIndex, chapterPosition) => Frame = frame;
+
     /// <summary>Position on the whole timeline.</summary>
     public TimeSpan Position { get; } = position;
 
@@ -12,6 +17,12 @@ public sealed class VideoPositionChangedEventArgs(TimeSpan position, int chapter
 
     /// <summary>Position inside that clip.</summary>
     public TimeSpan ChapterPosition { get; } = chapterPosition;
+
+    /// <summary>
+    /// The zero-based number of the frame on screen. Not <see cref="Position"/>
+    /// times the frame rate: see <c>VideoPlayerView.CurrentFrame</c>.
+    /// </summary>
+    public long Frame { get; }
 }
 
 /// <summary>The source is loaded and its properties are known.</summary>

@@ -26,8 +26,27 @@ public static class FrameMath
         double.IsFinite(frameRate) && frameRate > 0 ? frameRate : FallbackFrameRate;
 
     /// <summary>How long a single frame lasts at this frame rate.</summary>
+    /// <remarks>
+    /// Rounded to whole ticks, because a <see cref="TimeSpan"/> cannot hold
+    /// anything finer. Frame times are not built by adding this up — see
+    /// <see cref="FrameTicks"/>.
+    /// </remarks>
     public static TimeSpan FrameDuration(double frameRate) =>
-        TimeSpan.FromTicks((long)Math.Round(TimeSpan.TicksPerSecond / EffectiveFrameRate(frameRate)));
+        TimeSpan.FromTicks((long)Math.Round(FrameTicks(frameRate)));
+
+    /// <summary>
+    /// How long a frame lasts in ticks, unrounded.
+    /// </summary>
+    /// <remarks>
+    /// A frame at 30 fps is 333333.33 ticks. Rounding that to 333333 and then
+    /// multiplying by the frame number loses a third of a tick per frame, which
+    /// by frame 1350 is 45 microseconds — enough to put the start of frame 1350
+    /// at 44.999955 s, in the second before the one it belongs to. Multiplying
+    /// the unrounded value instead and rounding once at the end keeps every
+    /// frame boundary where the frame rate says it is.
+    /// </remarks>
+    private static double FrameTicks(double frameRate) =>
+        TimeSpan.TicksPerSecond / EffectiveFrameRate(frameRate);
 
     /// <summary>
     /// The zero-based number of the frame on screen at this position. Frame
@@ -38,8 +57,7 @@ public static class FrameMath
         if (position <= TimeSpan.Zero)
             return 0;
 
-        var frameTicks = (double)FrameDuration(frameRate).Ticks;
-        return (long)Math.Floor(position.Ticks / frameTicks + BoundaryTolerance);
+        return (long)Math.Floor(position.Ticks / FrameTicks(frameRate) + BoundaryTolerance);
     }
 
     /// <summary>
@@ -72,7 +90,7 @@ public static class FrameMath
         if (index <= 0)
             return TimeSpan.Zero;
 
-        return TimeSpan.FromTicks((long)Math.Round(index * (double)FrameDuration(frameRate).Ticks));
+        return TimeSpan.FromTicks((long)Math.Round(index * FrameTicks(frameRate)));
     }
 
     /// <summary>
@@ -112,7 +130,7 @@ public static class FrameMath
         // Aiming at the middle of the wanted frame there lands a frame too far,
         // every time.
         var offset = semantics == FrameSeekSemantics.Containing ? 0.5 : -0.5;
-        var target = TimeSpan.FromTicks((long)Math.Round((index + offset) * frame.Ticks));
+        var target = TimeSpan.FromTicks((long)Math.Round((index + offset) * FrameTicks(frameRate)));
 
         var last = duration > frame ? duration - frame : TimeSpan.Zero;
         if (target > last)

@@ -1,5 +1,6 @@
 using AVFoundation;
 using CoreGraphics;
+using System.Runtime.Versioning;
 using CoreMedia;
 using Foundation;
 using Indiko.Maui.Controls.VideoPlayer.Models;
@@ -630,7 +631,10 @@ public class VideoPlayerViewHandler
             return;
 
         var (index, local) = _timeline.ToLocal(position);
-        Report?.OnPositionChanged(position, index, local);
+
+        // AVFoundation shows the frame the position falls inside, so the frame
+        // on screen is simply the one this position belongs to.
+        Report?.OnPositionChanged(position, index, local, FrameMath.FrameIndexAt(position, _frameRate));
     }
 
     public void Play()
@@ -687,6 +691,18 @@ public class VideoPlayerViewHandler
         return reached;
     }
 
+    public Task<bool> SeekToFrameAsync(long frame, CancellationToken cancellationToken)
+    {
+        if (_player is not { } player || _timeline is null)
+            return Task.FromResult(false);
+
+        player.Pause();
+
+        return SeekExactAsync(
+            FrameMath.SeekTargetForFrame(frame, _frameRate, _timeline.Total, FrameSeekSemantics.Containing),
+            cancellationToken);
+    }
+
     public async Task<bool> StepFrameAsync(int frames)
     {
         if (_player is not { } player || _item is not { } item || _timeline is null)
@@ -713,6 +729,127 @@ public class VideoPlayerViewHandler
         var target = FrameMath.StepTarget(position, _frameRate, frames, _timeline.Total);
 
         return await SeekExactAsync(target, CancellationToken.None).ConfigureAwait(true);
+    }
+
+    public Point? ToPicturePoint(Point viewPoint)
+    {
+        var projection = Project();
+
+        return projection.ToVideo(viewPoint.X, viewPoint.Y) is { } point
+            ? new Point(point.X, point.Y)
+            : null;
+    }
+
+    public Point? ToViewPoint(Point picturePoint)
+    {
+        var projection = Project();
+
+        return projection.ToView(picturePoint.X, picturePoint.Y) is { } point
+            ? new Point(point.X, point.Y)
+            : null;
+    }
+
+    /// <summary>
+    /// How the frame is laid out on the control at this moment.
+    /// </summary>
+    /// <remarks>
+    /// The video rectangle is measured rather than computed: it already
+    /// accounts for the gravity, the rotation metadata and any pixel aspect
+    /// ratio, so nothing here has to reason about which way the camera was
+    /// held. Points are the same unit the control uses, so no conversion is
+    /// needed on this platform.
+    /// </remarks>
+    private VideoProjection Project()
+    {
+        if (PlatformView is not { } platformView || VirtualView is not { } view)
+            return default;
+
+        var video = platformView.PlayerLayer.VideoRect;
+        var bounds = platformView.Bounds;
+
+        return new VideoProjection(
+            new ViewRect(video.X, video.Y, video.Width, video.Height),
+            new ViewRect(bounds.X, bounds.Y, bounds.Width, bounds.Height),
+            new ZoomState(view.ZoomFactor, view.ZoomOffset.X, view.ZoomOffset.Y),
+            view.NaturalSize.Width,
+            view.NaturalSize.Height);
+    }
+
+    public async Task<byte[]?> CaptureFrameAsync(CancellationToken cancellationToken)
+    {
+        if (_player is not { } player || _item?.Asset is not { } asset)
+            return null;
+
+        var time = player.CurrentTime;
+
+        // Zero tolerance either side, or the generator answers from the nearest
+        // keyframe and the picture returned is not the one on screen — which
+        // for a control that exists to be frame-accurate would be worse than
+        // returning nothing.
+        var generator = new AVAssetImageGenerator(asset)
+        {
+            AppliesPreferredTrackTransform = true,
+            RequestedTimeToleranceBefore = CMTime.Zero,
+            RequestedTimeToleranceAfter = CMTime.Zero,
+        };
+
+        try
+        {
+            return OperatingSystem.IsIOSVersionAtLeast(16)
+                ? await GenerateAsync(generator, time, cancellationToken).ConfigureAwait(true)
+                : await Task.Run(() => CopyFrame(generator, time), cancellationToken).ConfigureAwait(true);
+        }
+        catch (OperationCanceledException)
+        {
+            return null;
+        }
+        finally
+        {
+            generator.Dispose();
+        }
+    }
+
+    [SupportedOSPlatform("ios16.0")]
+    private static async Task<byte[]?> GenerateAsync(
+        AVAssetImageGenerator generator, CMTime time, CancellationToken cancellationToken)
+    {
+        var completion = new TaskCompletionSource<byte[]?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        // Encoded inside the callback: the image handed to it is the
+        // generator's to keep, and outliving the callback with it is how this
+        // turns into a crash somewhere else entirely.
+        generator.GenerateCGImageAsynchronously(
+            time, (image, _, error) => completion.TrySetResult(Encode(image, error)));
+
+        using (cancellationToken.Register(() =>
+        {
+            generator.CancelAllCGImageGeneration();
+            completion.TrySetResult(null);
+        }))
+        {
+            return await completion.Task.ConfigureAwait(false);
+        }
+    }
+
+    // iOS 15 has no asynchronous generator; this is the synchronous one, which
+    // is why it runs off the main thread.
+    private static byte[]? CopyFrame(AVAssetImageGenerator generator, CMTime time)
+    {
+#pragma warning disable CA1422 // Deliberate: the replacement starts at iOS 16 and this is the path below it.
+        using var image = generator.CopyCGImageAtTime(time, out _, out var error);
+#pragma warning restore CA1422
+
+        return Encode(image, error);
+    }
+
+    private static byte[]? Encode(CGImage? image, NSError? error)
+    {
+        if (image is null || error is not null)
+            return null;
+
+        using var png = new UIImage(image).AsPNG();
+        return png?.ToArray();
     }
 
     public void BeginScrub()
