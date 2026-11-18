@@ -10,12 +10,25 @@ public class ValueClampTests
     [InlineData(0.25, 0.25)]
     [InlineData(2, 2)]
     [InlineData(0.1, 0.1)]
+    [InlineData(4, 4)]
+    [InlineData(8, 8)]
+    [InlineData(16, 16)]
     [InlineData(0, 0.1)]
-    [InlineData(-3, 0.1)]
-    [InlineData(5, 2)]
-    public void Speed_stays_between_a_tenth_and_double(double requested, double expected)
+    [InlineData(99, 16)]
+    public void Speed_stays_between_a_tenth_and_sixteen_times(double requested, double expected)
     {
         Assert.Equal(expected, ValueClamp.Speed(requested), 6);
+    }
+
+    [Theory]
+    [InlineData(-1)]
+    [InlineData(-3)]
+    public void A_negative_speed_is_not_how_the_picture_runs_backwards(double requested)
+    {
+        // Direction is a verb here, not a sign: PlayReverse decides it, and it
+        // can say that the platform or the media will not. A negative rate
+        // smuggled through the speed would have to fail silently on Android.
+        Assert.Equal(ValueClamp.MinimumSpeed, ValueClamp.Speed(requested), 6);
     }
 
     [Fact]

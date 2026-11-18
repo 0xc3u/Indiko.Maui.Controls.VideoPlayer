@@ -19,7 +19,7 @@ public class MainPage : ContentPage
     private static readonly string[] BundledChapters =
         ["GH010001.MP4", "GH020001.MP4", "GH030001.MP4"];
 
-    private static readonly double[] Speeds = [0.25, 0.5, 1, 2];
+    private static readonly double[] Speeds = [0.25, 0.5, 1, 2, 4, 8, 16];
     private static readonly int[] Rates = [10, 15, 30];
     private static readonly double[] Zooms = [1, 2, 4, 8];
 
@@ -68,6 +68,7 @@ public class MainPage : ContentPage
     };
 
     private Button? _pinchButton;
+    private Button? _reverseButton;
     private readonly Entry _frameEntry;
 
     private readonly Label _empty = new()
@@ -149,7 +150,16 @@ public class MainPage : ContentPage
             _player.ScrubTo(_player.Duration * e.NewValue);
         };
 
-        _glyphView = new GraphicsView { Drawable = _glyph, HeightRequest = 26, WidthRequest = 26 };
+        // Input transparent, like the timeline drawable: a GraphicsView
+        // swallows the touch it is given, and the tap this one is drawn inside
+        // belongs to the border around it.
+        _glyphView = new GraphicsView
+        {
+            Drawable = _glyph,
+            HeightRequest = 26,
+            WidthRequest = 26,
+            InputTransparent = true,
+        };
 
         _seekEntry = new Entry
         {
@@ -392,6 +402,16 @@ public class MainPage : ContentPage
         var toggles = Group("Options");
         toggles.Add(Action("Mute", () => { _player.IsMuted = !_player.IsMuted; Say(_player.IsMuted ? "Muted." : "Sound on."); return Task.CompletedTask; }));
         toggles.Add(Action("Loop", () => { _player.IsLooping = !_player.IsLooping; Say(_player.IsLooping ? "Looping." : "Looping off."); return Task.CompletedTask; }));
+        _reverseButton = Action("Reverse", () =>
+        {
+            Say(_player.PlayReverse()
+                ? $"Running backwards at {FormatSpeed(_player.Speed)}."
+                : "This platform will not play this media backwards.");
+
+            return Task.CompletedTask;
+        });
+
+        toggles.Add(_reverseButton);
         toggles.Add(Action("Scaling", CycleScaling));
         toggles.Add(Action("Back to start", () => { _player.Stop(); return Task.CompletedTask; }));
         stack.Children.Add(toggles);
@@ -1035,6 +1055,11 @@ public class MainPage : ContentPage
         var rate = e.FrameRate > 0 ? $"{e.FrameRate:0.###} fps" : "frame rate unknown";
 
         _format.Text = $"{rate}   {size}   {e.ChapterDurations.Count} chapter{(e.ChapterDurations.Count == 1 ? "" : "s")}";
+
+        // The control says whether backwards is possible here; the button
+        // follows it rather than the other way round.
+        if (_reverseButton is not null)
+            _reverseButton.IsEnabled = _player.CanPlayReverse;
         _duration.Text = $"of {Timecode(FrameMath.FrameIndexAt(e.Duration, e.FrameRate), e.FrameRate)}";
 
         if (e.ChapterDurations.Count > 1 && e.Duration > TimeSpan.Zero)

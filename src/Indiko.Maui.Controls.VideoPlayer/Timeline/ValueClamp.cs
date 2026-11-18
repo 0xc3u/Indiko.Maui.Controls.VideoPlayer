@@ -15,8 +15,17 @@ public static class ValueClamp
     /// <summary>Slowest playback rate. Below this, audio is unusable and decoding stalls.</summary>
     public const double MinimumSpeed = 0.1;
 
-    /// <summary>Fastest playback rate the control offers.</summary>
-    public const double MaximumSpeed = 2.0;
+    /// <summary>
+    /// Fastest playback rate the control offers.
+    /// </summary>
+    /// <remarks>
+    /// Sixteen because reviewing an hour of footage at two times is half an
+    /// hour of someone's attention. What the decoder can actually keep up with
+    /// is another matter — both platforms drop frames rather than fall behind,
+    /// which is what a fast review wants — and both stop carrying audio well
+    /// before this.
+    /// </remarks>
+    public const double MaximumSpeed = 16.0;
 
     /// <summary>Clamps a playback rate; a value that is not a number falls back to normal speed.</summary>
     public static double Speed(double speed)

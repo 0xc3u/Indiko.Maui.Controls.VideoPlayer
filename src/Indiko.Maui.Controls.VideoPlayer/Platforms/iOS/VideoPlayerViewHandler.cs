@@ -228,9 +228,16 @@ public class VideoPlayerViewHandler
 
         var range = VirtualView?.Range ?? PlaybackRange.None;
 
-        item.ForwardPlaybackEndTime = range.IsUsable(_timeline.Total)
+        var ranged = range.IsUsable(_timeline.Total);
+
+        item.ForwardPlaybackEndTime = ranged
             ? CMTime.FromSeconds(range.End(_timeline.Total).TotalSeconds, TimeScale)
             : CMTime.PositiveInfinity;
+
+        // Backwards, the range ends at its in point.
+        item.ReversePlaybackEndTime = ranged
+            ? CMTime.FromSeconds(range.Start(_timeline.Total).TotalSeconds, TimeScale)
+            : CMTime.Zero;
     }
 
     private static void MapZoom(VideoPlayerViewHandler handler, VideoPlayerView view) =>
@@ -597,6 +604,11 @@ public class VideoPlayerViewHandler
                     ? TimeSpan.FromSeconds(item.Duration.Seconds)
                     : _timeline.Total;
 
+                // Asked of the item rather than assumed: a format AVFoundation
+                // will not run backwards says so here, before an app offers a
+                // button for it.
+                Report?.OnReverseAvailabilityChanged(item.CanPlayReverse);
+
                 Report?.OnMediaOpened(duration, _frameRate, _naturalSize, _timeline.ChapterDurations);
 
                 // The video rectangle only exists once there is a frame, so a
@@ -700,6 +712,30 @@ public class VideoPlayerViewHandler
             player.Play();
         else
             player.Rate = (float)ValueClamp.Speed(VirtualView.Speed);
+    }
+
+    public bool PlayReverse()
+    {
+        if (_player is not { } player || _item is not { } item)
+            return false;
+
+        var speed = ValueClamp.Speed(VirtualView.Speed);
+
+        // AVFoundation keeps three separate promises about running backwards,
+        // one per band of rates. Asking the wrong one would start a rate the
+        // item cannot serve, which on screen looks like a freeze.
+        var promised = speed switch
+        {
+            < 1 => item.CanPlaySlowReverse,
+            1 => item.CanPlayReverse,
+            _ => item.CanPlayFastReverse,
+        };
+
+        if (!promised)
+            return false;
+
+        player.Rate = -(float)speed;
+        return true;
     }
 
     public void Pause() => _player?.Pause();

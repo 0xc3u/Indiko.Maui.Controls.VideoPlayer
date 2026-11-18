@@ -16,6 +16,8 @@ internal interface IVideoPlayerController
 {
     void Play();
 
+    bool PlayReverse();
+
     void Pause();
 
     void Stop();
@@ -56,6 +58,8 @@ internal interface IVideoPlayerViewController
     void OnStateChanged(VideoPlayerState state);
 
     void OnZoomChanged(double factor, Point offset);
+
+    void OnReverseAvailabilityChanged(bool canPlayReverse);
 
     void OnBookmarkRefreshed(int chapterIndex, string newBookmark);
 

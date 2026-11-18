@@ -188,6 +188,38 @@ seek asked for rather than the frame it displays, so the Android handler tracks
 the frame on screen and reports that frame's start — otherwise a frame counter
 driven from `Position` disagrees with what the viewer can read.
 
+## Speed, and running backwards
+
+```csharp
+player.Speed = 8;           // 0.1 to 16; direction is not a sign
+player.Play();              // forwards
+player.PlayReverse();       // backwards at the same speed, false if it cannot
+player.CanPlayReverse;      // whether this media runs backwards here at all
+```
+
+`Speed` is always positive. Direction is a verb, because the two platforms
+disagree about whether backwards is possible at all, and a negative number
+would have to fail silently on one of them.
+
+Sixteen times is the ceiling because reviewing an hour of footage at two times
+is half an hour of someone's attention. What the decoder keeps up with is
+another matter: measured on an Android emulator with software decoding, 8×
+played at 8.3× real time while 16× also delivered about 8×, dropping frames
+rather than falling behind — which is what a fast review wants. Neither
+platform carries audio far past 2×.
+
+**Backwards is iOS only.** AVFoundation has a negative playback rate and will
+say per item whether it can serve one, which is what `CanPlayReverse` reports —
+bind a reverse button to it and it disappears where it would not work. Media3
+has no negative rate at all: `SetPlaybackSpeed` refuses anything at or below
+zero, and the alternative, a timer stepping backwards, is not the same thing.
+Each backward step on long-GOP footage decodes from the previous keyframe, so
+it would manage a handful of frames a second while claiming to play. Saying no
+is the honest answer.
+
+With a range set, backwards stops at the in point rather than at the beginning
+of the media.
+
 ## In and out points
 
 ```csharp
@@ -337,7 +369,7 @@ transform, inside a clipping container.
 | Property | Type | Default | |
 |---|---|---|---|
 | `Source` | `VideoPlayerSource?` | `null` | assigning tears down and reloads |
-| `Speed` | `double` | `1.0` | clamped to 0.1–2.0 |
+| `Speed` | `double` | `1.0` | clamped to 0.1–16; always positive |
 | `Volume` | `double` | `1.0` | clamped to 0–1 |
 | `IsMuted` | `bool` | `false` | |
 | `IsLooping` | `bool` | `false` | loops the range when one is set, else the media |
@@ -354,7 +386,8 @@ transform, inside a clipping container.
 | `AllowNetworkAccess` | `bool` | `false` | iOS, iCloud downloads |
 
 Read-only: `Position`, `CurrentFrame`, `Duration`, `State`, `IsPlaying`,
-`FrameRate`, `NaturalSize`, `CurrentChapterIndex`, `ChapterDurations`.
+`CanPlayReverse`, `FrameRate`, `NaturalSize`, `CurrentChapterIndex`,
+`ChapterDurations`.
 
 `NaturalSize` is the picture as displayed, after the rotation the camera
 recorded: a phone held upright reports 1080x1920, not the 1920x1080 in the
@@ -368,6 +401,7 @@ container.
 | | |
 |---|---|
 | `Play()` `Pause()` `Stop()` | `Stop` also returns to the start |
+| `bool PlayReverse()` | backwards at `Speed`; `false` where that is not possible |
 | `Task<bool> SeekExactAsync(TimeSpan, CancellationToken = default)` | `false` when overtaken or cancelled |
 | `Task<bool> SeekToFrameAsync(long frame, CancellationToken = default)` | pauses first; the frame, not the time |
 | `Task<bool> StepFrameAsync(int frames)` | pauses first, crosses chapters |
@@ -428,6 +462,9 @@ depending on the upper end. The sample app shows the live rate.
   container does not report one the control falls back to 30 fps.
 - **HEVC backwards.** Stepping back through B-frames makes the decoder walk
   past frames it has not displayed. It works, but it is the slowest path.
+- **Backwards is iOS only**, and `CanPlayReverse` says so at runtime rather
+  than leaving an app to find out. See the section above for why emulating it
+  on Android would be a different feature wearing the same name.
 - **Teardown is complete and immediate.** Leaving the page releases the player,
   stops the timers, cancels pending photo requests and closes security-scoped
   access. There is no background playback, no media session and no foreground

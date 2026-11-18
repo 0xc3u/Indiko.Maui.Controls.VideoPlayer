@@ -89,6 +89,9 @@ public class VideoPlayerView : View, IVideoPlayerViewController
     private static readonly BindablePropertyKey NaturalSizePropertyKey = BindableProperty.CreateReadOnly(
         nameof(NaturalSize), typeof(Size), typeof(VideoPlayerView), Size.Zero);
 
+    private static readonly BindablePropertyKey CanPlayReversePropertyKey = BindableProperty.CreateReadOnly(
+        nameof(CanPlayReverse), typeof(bool), typeof(VideoPlayerView), false);
+
     private static readonly BindablePropertyKey CurrentFramePropertyKey = BindableProperty.CreateReadOnly(
         nameof(CurrentFrame), typeof(long), typeof(VideoPlayerView), 0L);
 
@@ -101,6 +104,7 @@ public class VideoPlayerView : View, IVideoPlayerViewController
     public static readonly BindableProperty IsPlayingProperty = IsPlayingPropertyKey.BindableProperty;
     public static readonly BindableProperty FrameRateProperty = FrameRatePropertyKey.BindableProperty;
     public static readonly BindableProperty NaturalSizeProperty = NaturalSizePropertyKey.BindableProperty;
+    public static readonly BindableProperty CanPlayReverseProperty = CanPlayReversePropertyKey.BindableProperty;
     public static readonly BindableProperty CurrentFrameProperty = CurrentFramePropertyKey.BindableProperty;
     public static readonly BindableProperty CurrentChapterIndexProperty = CurrentChapterIndexPropertyKey.BindableProperty;
 
@@ -114,7 +118,16 @@ public class VideoPlayerView : View, IVideoPlayerViewController
         set => SetValue(SourceProperty, value);
     }
 
-    /// <summary>Playback rate, 0.1 to 2.0. Values outside that are clamped.</summary>
+    /// <summary>
+    /// Playback rate, 0.1 to 16. Values outside that are clamped.
+    /// </summary>
+    /// <remarks>
+    /// Always positive: direction is <see cref="PlayReverse"/>, not a sign, so
+    /// that a platform which cannot run backwards can say so instead of
+    /// silently standing still. What the decoder keeps up with at the top of
+    /// the range is its own business — both platforms drop frames rather than
+    /// fall behind — and neither carries audio far past 2.
+    /// </remarks>
     public double Speed
     {
         get => (double)GetValue(SpeedProperty);
@@ -326,6 +339,23 @@ public class VideoPlayerView : View, IVideoPlayerViewController
     }
 
     /// <summary>
+    /// Whether this media can be played backwards on this platform.
+    /// </summary>
+    /// <remarks>
+    /// False until a source is open, and false on Android throughout: Media3
+    /// has no negative playback rate, and running a timer that steps backwards
+    /// would be a different thing wearing the same name — on long-GOP footage
+    /// each step decodes from the previous keyframe, so it would manage a
+    /// handful of frames a second and call it play. An app can bind a reverse
+    /// button to this and have it disappear where it would not work.
+    /// </remarks>
+    public bool CanPlayReverse
+    {
+        get => (bool)GetValue(CanPlayReverseProperty);
+        private set => SetValue(CanPlayReversePropertyKey, value);
+    }
+
+    /// <summary>
     /// The zero-based number of the frame on screen, as the handler knows it
     /// rather than as the app would have to guess it.
     /// </summary>
@@ -387,6 +417,21 @@ public class VideoPlayerView : View, IVideoPlayerViewController
     {
         VerifyMainThread();
         Controller?.Play();
+    }
+
+    /// <summary>
+    /// Plays backwards at <see cref="Speed"/>, stopping at the in point of the
+    /// range or at the beginning of the media.
+    /// </summary>
+    /// <returns>
+    /// <c>false</c> when the platform or this particular media cannot run
+    /// backwards, or nothing is loaded — see <see cref="CanPlayReverse"/>. The
+    /// picture then stays where it is rather than pretending.
+    /// </returns>
+    public bool PlayReverse()
+    {
+        VerifyMainThread();
+        return Controller?.PlayReverse() ?? false;
     }
 
     /// <summary>Pauses, keeping the position.</summary>
@@ -628,6 +673,11 @@ public class VideoPlayerView : View, IVideoPlayerViewController
         // app setting a factor are reported through exactly one path.
         ZoomOffset = offset;
         ZoomFactor = factor;
+    }
+
+    void IVideoPlayerViewController.OnReverseAvailabilityChanged(bool canPlayReverse)
+    {
+        CanPlayReverse = canPlayReverse;
     }
 
     private static void OnZoomPropertyChanged(BindableObject bindable, object oldValue, object newValue)

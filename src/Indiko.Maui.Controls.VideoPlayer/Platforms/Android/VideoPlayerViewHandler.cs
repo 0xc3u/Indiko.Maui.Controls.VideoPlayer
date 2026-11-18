@@ -379,6 +379,18 @@ public partial class VideoPlayerViewHandler
         StartTicker();
     }
 
+    /// <summary>
+    /// Always false: Media3 has no negative playback rate.
+    /// </summary>
+    /// <remarks>
+    /// <c>SetPlaybackSpeed</c> refuses anything at or below zero, and the
+    /// alternative — a timer stepping backwards — is not the same thing. Each
+    /// backward step on long-GOP footage decodes from the previous keyframe,
+    /// so it would manage a handful of frames a second while claiming to play.
+    /// Saying no is the honest answer, and the app can hide its button.
+    /// </remarks>
+    public bool PlayReverse() => false;
+
     public void Pause() => _player?.Pause();
 
     public void Stop()
@@ -576,6 +588,7 @@ public partial class VideoPlayerViewHandler
             ? new Size(turned ? format.Height : format.Width, turned ? format.Width : format.Height)
             : Size.Zero;
 
+        Report?.OnReverseAvailabilityChanged(false);
         Report?.OnMediaOpened(duration, _frameRate, size, _timeline.ChapterDurations);
         Report?.OnStateChanged(player.IsPlaying ? VideoPlayerState.Playing : VideoPlayerState.Ready);
 
