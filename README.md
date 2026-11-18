@@ -259,6 +259,36 @@ runs up to 66 ms — two frames — past the out point before a loop notices.
 
 Three things an analysis app needs that a player normally keeps to itself.
 
+### Counted, not calculated
+
+```csharp
+player.FrameCount;          // 0 until the container has been read
+player.CurrentFrame;        // exact once it has
+```
+
+A frame rate is an average, and on variable frame rate material it is an
+average of things that never happened: an iPhone dropping into slow motion, an
+action camera dropping frames in the heat, a surveillance recorder slowing down
+when nothing moves. Multiplying a position by such a rate gives a frame number
+that is wrong without ever looking wrong.
+
+So the control reads when every frame actually begins, from the container's own
+sample table — `AVAssetReader` in passthrough on iOS, `MediaExtractor` on
+Android — and counts, seeks and steps from those timestamps. Nothing is
+decoded; the pass covers the index rather than the pictures, and for a source
+built from several files each clip is read and shifted onto the shared
+timeline.
+
+It runs in the background after the source opens, because an app should not
+wait on it to show a first frame. Until it lands, frame numbers come from the
+reported rate exactly as before — right on constant frame rate material,
+approximate on anything else — and `FrameCount` is 0. When it lands,
+`FrameCount` is the number of frames there are, and the frame on screen is
+renumbered if the old arithmetic had it wrong.
+
+A container the reader cannot walk simply never sets `FrameCount`: a source
+without an exact index still plays.
+
 ### The frame on screen
 
 ```csharp
@@ -385,9 +415,9 @@ transform, inside a clipping container.
 | `PauseWhenInBackground` | `bool` | `true` | never resumes by itself |
 | `AllowNetworkAccess` | `bool` | `false` | iOS, iCloud downloads |
 
-Read-only: `Position`, `CurrentFrame`, `Duration`, `State`, `IsPlaying`,
-`CanPlayReverse`, `FrameRate`, `NaturalSize`, `CurrentChapterIndex`,
-`ChapterDurations`.
+Read-only: `Position`, `CurrentFrame`, `FrameCount`, `Duration`, `State`,
+`IsPlaying`, `CanPlayReverse`, `FrameRate`, `NaturalSize`,
+`CurrentChapterIndex`, `ChapterDurations`.
 
 `NaturalSize` is the picture as displayed, after the rotation the camera
 recorded: a phone held upright reports 1080x1920, not the 1920x1080 in the
@@ -456,10 +486,12 @@ depending on the upper end. The sample app shows the live rate.
 
 ## Limits
 
-- **Variable frame rate.** Stepping assumes a fixed frame duration, so on VFR
-  material it is approximate — and so, for the same reason, are `CurrentFrame`
-  and `SeekToFrameAsync`. The frame rate is read from the format; when the
-  container does not report one the control falls back to 30 fps.
+- **Variable frame rate** is handled by reading the real frame times, but only
+  once that pass finishes — see *Counted, not calculated*. In the moment
+  between opening and `FrameCount` arriving, and for any container the reader
+  cannot walk, frame numbers come from the reported rate and are approximate on
+  VFR material. When the container reports no rate at all the control falls
+  back to 30 fps.
 - **HEVC backwards.** Stepping back through B-frames makes the decoder walk
   past frames it has not displayed. It works, but it is the slowest path.
 - **Backwards is iOS only**, and `CanPlayReverse` says so at runtime rather

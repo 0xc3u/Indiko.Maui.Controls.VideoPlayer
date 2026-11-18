@@ -232,6 +232,16 @@ if $INSTALL_SAMPLE; then
     cp "$OUT/GH010001.MP4" "$OUT/GH020001.MP4" "$OUT/GH030001.MP4" "$SAMPLE_RAW/"
     echo
     echo "Copied the chapter set into $SAMPLE_RAW (git-ignored)"
+
+    # The variable frame rate clip is what the frame index is for: without it
+    # the sample can only show that frame numbers are right where they were
+    # never in doubt. It only exists after a full run.
+    if [[ -f "$OUT/vfr.mp4" ]]; then
+        cp "$OUT/vfr.mp4" "$SAMPLE_RAW/"
+        echo "Copied vfr.mp4 as well"
+    else
+        echo "No vfr.mp4 yet; run without --quick to build it"
+    fi
 fi
 
 echo

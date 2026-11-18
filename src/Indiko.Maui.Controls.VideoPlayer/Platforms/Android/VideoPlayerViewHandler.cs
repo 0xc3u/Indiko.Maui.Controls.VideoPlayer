@@ -52,6 +52,7 @@ public partial class VideoPlayerViewHandler
 
     private ChapterTimeline? _timeline;
     private PositionThrottle _throttle = new(15);
+    private FrameClock _frames = FrameClock.FromRate(0, TimeSpan.Zero);
     private double _frameRate;
     private bool _isScrubbing;
     private int _currentSeekGeneration;
@@ -233,6 +234,7 @@ public partial class VideoPlayerViewHandler
         player.Stop();
         player.ClearMediaItems();
         _chapterUris.Clear();
+        _frames = FrameClock.FromRate(0, TimeSpan.Zero);
         _timeline = null;
         _displayedFrame = null;
         _throttle.Reset();
@@ -437,10 +439,8 @@ public partial class VideoPlayerViewHandler
 
         player.Pause();
 
-        var wanted = Math.Max(0, frame);
-
-        var target = FrameMath.SeekTargetForFrame(
-            wanted, _frameRate, _timeline.Total, FrameSeekSemantics.AtOrAfter);
+        var wanted = _frames.ClampFrame(frame);
+        var target = _frames.SeekTarget(wanted, FrameSeekSemantics.AtOrAfter);
 
         var reached = await SeekExactAsync(target, cancellationToken).ConfigureAwait(true);
 
@@ -452,7 +452,7 @@ public partial class VideoPlayerViewHandler
         // Report where the picture is, not where the seek aimed: the two differ
         // by half a frame here, and an app drawing a frame counter from
         // Position would otherwise disagree with what the viewer reads on screen.
-        ReportPosition(FrameMath.FrameStartTime(wanted, _frameRate), force: true);
+        ReportPosition(_frames.FrameStart(wanted), force: true);
         return true;
     }
 
@@ -462,7 +462,7 @@ public partial class VideoPlayerViewHandler
             return Task.FromResult(false);
 
         var position = TimeSpan.FromMilliseconds(player.CurrentPosition);
-        var current = _displayedFrame ?? FrameMath.FrameIndexAt(position, _frameRate);
+        var current = _displayedFrame ?? _frames.FrameAt(position);
 
         return SeekToFrameAsync(current + frames, CancellationToken.None);
     }
@@ -559,7 +559,7 @@ public partial class VideoPlayerViewHandler
         // seek asked for, which sits half a frame below the frame it displays,
         // so deriving the number from the position would be off by one exactly
         // where it matters most.
-        var frame = _displayedFrame ?? FrameMath.FrameIndexAt(position, _frameRate);
+        var frame = _displayedFrame ?? _frames.FrameAt(position);
 
         Report?.OnPositionChanged(position, index, local, frame);
     }
@@ -589,6 +589,15 @@ public partial class VideoPlayerViewHandler
             : Size.Zero;
 
         Report?.OnReverseAvailabilityChanged(false);
+
+        // Until the sample tables have been read, frames are counted by the
+        // rate the container claims.
+        if (!_frames.IsExact)
+        {
+            _frames = FrameClock.FromRate(_frameRate, duration);
+            _ = BuildFrameIndexAsync(_chapterUris.ToArray(), _timeline, _frameRate, _generation);
+        }
+
         Report?.OnMediaOpened(duration, _frameRate, size, _timeline.ChapterDurations);
         Report?.OnStateChanged(player.IsPlaying ? VideoPlayerState.Playing : VideoPlayerState.Ready);
 

@@ -61,6 +61,8 @@ internal interface IVideoPlayerViewController
 
     void OnReverseAvailabilityChanged(bool canPlayReverse);
 
+    void OnFrameCountChanged(long frameCount);
+
     void OnBookmarkRefreshed(int chapterIndex, string newBookmark);
 
     void OnDownloadProgress(int chapterIndex, double progress);

@@ -61,13 +61,12 @@ public partial class VideoPlayerViewHandler
             return null;
 
         var position = TimeSpan.FromMilliseconds(player.CurrentPosition);
-        var frame = _displayedFrame ?? FrameMath.FrameIndexAt(position, _frameRate);
+        var frame = _displayedFrame ?? _frames.FrameAt(position);
 
         // The middle of the wanted frame rather than its start: the retriever
         // returns the frame closest to the time it is given, and a frame
         // boundary is a coin flip between two of them.
-        var target = FrameMath.FrameStartTime(frame, _frameRate)
-            + (FrameMath.FrameDuration(_frameRate) / 2);
+        var target = _frames.SeekTarget(frame, FrameSeekSemantics.Containing);
 
         var (chapter, local) = _timeline.ToLocal(target);
 

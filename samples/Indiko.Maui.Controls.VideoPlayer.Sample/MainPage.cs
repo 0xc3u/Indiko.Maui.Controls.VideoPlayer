@@ -59,6 +59,7 @@ public class MainPage : ContentPage
     private readonly Label _picked = Numeric(13, Type.Mono, text: "tap the picture");
     private readonly Label _grab = Numeric(13, Type.Mono);
     private readonly Label _rangeReadout = Numeric(13, Type.Mono, text: "whole media");
+    private readonly Label _frames = Numeric(13, Type.Mono, text: "counting…");
     private readonly Image _still = new()
     {
         HeightRequest = 92,
@@ -540,6 +541,7 @@ public class MainPage : ContentPage
         var bundled = Group("Bundled");
         bundled.Add(Action("Three chapters", LoadBundledChaptersAsync));
         bundled.Add(Action("Single clip", LoadSingleBundledClipAsync));
+        bundled.Add(Action("Variable rate", LoadVariableRateClipAsync));
         stack.Children.Add(Labelled("Ships with the sample", bundled));
 
         var picked = Group("Picked");
@@ -600,6 +602,7 @@ public class MainPage : ContentPage
         {
             Reading("State", _state),
             Reading("Media", _format),
+            Reading("Frames", _frames),
             Reading("Event rate", _events),
             Reading("Zoom", _zoomReadout),
             Reading("From the clock", _derived),
@@ -828,6 +831,16 @@ public class MainPage : ContentPage
         _source.Text = "Three files, one timeline. Frame numbers run 0 to 1799 without a break.";
         Say("Seek to 45 s: the picture should read 1350.");
         _player.Source = VideoPlayerSource.FromChapters(clips);
+    }
+
+    private async Task LoadVariableRateClipAsync()
+    {
+        _source.Text =
+            "15, 30 and 60 fps spliced into one file. The container reports a single "
+            + "average rate that describes none of it.";
+
+        Say("Step frame by frame: the burnt-in number must go up by exactly one each time.");
+        _player.Source = VideoPlayerSource.FromFile(await EnsureCachedAsync("vfr.mp4"));
     }
 
     private async Task LoadSingleBundledClipAsync()
@@ -1060,6 +1073,11 @@ public class MainPage : ContentPage
         // follows it rather than the other way round.
         if (_reverseButton is not null)
             _reverseButton.IsEnabled = _player.CanPlayReverse;
+
+        // The count arrives a moment after the media opens, so this starts as
+        // the estimate and is replaced by the counted number.
+        ShowFrameCount();
+        _player.PropertyChanged += OnPlayerPropertyChanged;
         _duration.Text = $"of {Timecode(FrameMath.FrameIndexAt(e.Duration, e.FrameRate), e.FrameRate)}";
 
         if (e.ChapterDurations.Count > 1 && e.Duration > TimeSpan.Zero)
@@ -1081,6 +1099,26 @@ public class MainPage : ContentPage
         }
 
         _timelineView.Invalidate();
+    }
+
+    private void OnPlayerPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(VideoPlayerView.FrameCount))
+            ShowFrameCount();
+    }
+
+    // Counted from the container against estimated from the rate: on constant
+    // frame rate material the two agree, and the difference on anything else is
+    // the whole point of counting.
+    private void ShowFrameCount()
+    {
+        var estimate = _player.FrameRate > 0
+            ? FrameMath.FrameIndexAt(_player.Duration, _player.FrameRate)
+            : 0;
+
+        _frames.Text = _player.FrameCount > 0
+            ? $"{_player.FrameCount} counted   {estimate} from the rate"
+            : $"counting…   {estimate} from the rate";
     }
 
     private void OnMediaFailed(object? sender, VideoFailedEventArgs e)

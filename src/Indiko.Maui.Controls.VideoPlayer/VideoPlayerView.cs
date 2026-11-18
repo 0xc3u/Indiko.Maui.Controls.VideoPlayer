@@ -92,6 +92,9 @@ public class VideoPlayerView : View, IVideoPlayerViewController
     private static readonly BindablePropertyKey CanPlayReversePropertyKey = BindableProperty.CreateReadOnly(
         nameof(CanPlayReverse), typeof(bool), typeof(VideoPlayerView), false);
 
+    private static readonly BindablePropertyKey FrameCountPropertyKey = BindableProperty.CreateReadOnly(
+        nameof(FrameCount), typeof(long), typeof(VideoPlayerView), 0L);
+
     private static readonly BindablePropertyKey CurrentFramePropertyKey = BindableProperty.CreateReadOnly(
         nameof(CurrentFrame), typeof(long), typeof(VideoPlayerView), 0L);
 
@@ -105,6 +108,7 @@ public class VideoPlayerView : View, IVideoPlayerViewController
     public static readonly BindableProperty FrameRateProperty = FrameRatePropertyKey.BindableProperty;
     public static readonly BindableProperty NaturalSizeProperty = NaturalSizePropertyKey.BindableProperty;
     public static readonly BindableProperty CanPlayReverseProperty = CanPlayReversePropertyKey.BindableProperty;
+    public static readonly BindableProperty FrameCountProperty = FrameCountPropertyKey.BindableProperty;
     public static readonly BindableProperty CurrentFrameProperty = CurrentFramePropertyKey.BindableProperty;
     public static readonly BindableProperty CurrentChapterIndexProperty = CurrentChapterIndexPropertyKey.BindableProperty;
 
@@ -353,6 +357,24 @@ public class VideoPlayerView : View, IVideoPlayerViewController
     {
         get => (bool)GetValue(CanPlayReverseProperty);
         private set => SetValue(CanPlayReversePropertyKey, value);
+    }
+
+    /// <summary>
+    /// How many frames the source has, or 0 until that is known exactly.
+    /// </summary>
+    /// <remarks>
+    /// Counted from the container's own sample table rather than from the
+    /// duration times the frame rate, which is why it arrives a moment after
+    /// <see cref="MediaOpened"/> rather than with it. While it is 0,
+    /// <see cref="CurrentFrame"/> and the frame-stepping methods are working
+    /// from the reported frame rate and are exact only on constant frame rate
+    /// material; once it is set, every frame number comes from the timestamps
+    /// the camera wrote.
+    /// </remarks>
+    public long FrameCount
+    {
+        get => (long)GetValue(FrameCountProperty);
+        private set => SetValue(FrameCountPropertyKey, value);
     }
 
     /// <summary>
@@ -678,6 +700,11 @@ public class VideoPlayerView : View, IVideoPlayerViewController
     void IVideoPlayerViewController.OnReverseAvailabilityChanged(bool canPlayReverse)
     {
         CanPlayReverse = canPlayReverse;
+    }
+
+    void IVideoPlayerViewController.OnFrameCountChanged(long frameCount)
+    {
+        FrameCount = frameCount;
     }
 
     private static void OnZoomPropertyChanged(BindableObject bindable, object oldValue, object newValue)

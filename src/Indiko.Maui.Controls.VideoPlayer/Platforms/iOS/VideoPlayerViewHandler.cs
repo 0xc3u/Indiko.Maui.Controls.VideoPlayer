@@ -58,6 +58,14 @@ public class VideoPlayerViewHandler
 
     private ChapterTimeline? _timeline;
     private PositionThrottle _throttle = new(15);
+    private FrameClock _frames = FrameClock.FromRate(0, TimeSpan.Zero);
+
+    // Which frame is on screen, when that is known better than the player's
+    // clock knows it. AVFoundation updates CurrentTime asynchronously after a
+    // step, so reading it straight afterwards reports the frame that was there
+    // a moment ago — and on variable frame rate material the error does not
+    // even stay the same size.
+    private long? _displayedFrame;
     private double _frameRate;
     private Size _naturalSize = Size.Zero;
     private bool _isScrubbing;
@@ -173,6 +181,8 @@ public class VideoPlayerViewHandler
         _clips.Clear();
 
         _timeline = null;
+        _displayedFrame = null;
+        _frames = FrameClock.FromRate(0, TimeSpan.Zero);
         _opened = false;
     }
 
@@ -576,6 +586,117 @@ public class VideoPlayerViewHandler
             player.Play();
     }
 
+    /// <summary>
+    /// Reads when every frame begins, and switches the clock over to it.
+    /// </summary>
+    /// <remarks>
+    /// The reader runs over the composition, so the timestamps are already on
+    /// the timeline the app sees, seams and all. Output settings of null mean
+    /// passthrough: the samples are handed over compressed and nothing is
+    /// decoded, which is what keeps a pass over an hour of footage to a second
+    /// or so rather than an hour.
+    /// </remarks>
+    private async Task BuildFrameIndexAsync(AVAsset asset, TimeSpan duration, int generation)
+    {
+        var token = _loading?.Token ?? CancellationToken.None;
+
+        FrameIndex? index;
+
+        try
+        {
+            // The same asynchronous loader the source path uses: asking an
+            // asset for its tracks synchronously is deprecated and blocks.
+            var tracks = await asset
+                .LoadTracksWithMediaTypeAsync(AVMediaTypes.Video.GetConstant()!)
+                .ConfigureAwait(true);
+
+            if (tracks is null || tracks.Count == 0)
+                return;
+
+            var track = tracks[0];
+
+            index = await Task.Run(() => ReadFrameIndex(asset, track, token), token).ConfigureAwait(true);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+        catch (Exception)
+        {
+            return;
+        }
+
+        // A source that was replaced while this ran must not have its frames
+        // renumbered by the one before it.
+        if (index is null || generation != _generation || VirtualView is null)
+            return;
+
+        _frames = FrameClock.FromRate(_frameRate, duration).WithIndex(index);
+
+        // The tracked frame was counted the old way.
+        _displayedFrame = null;
+
+        Report?.OnFrameCountChanged(_frames.Count);
+
+        // The frame on screen may have had a different number a moment ago.
+        if (_player is { } player)
+            ReportPosition(TimeSpan.FromSeconds(player.CurrentTime.Seconds), force: true);
+    }
+
+    private static FrameIndex? ReadFrameIndex(AVAsset asset, AVAssetTrack track, CancellationToken token)
+    {
+        AVAssetReader? reader = null;
+
+        try
+        {
+            reader = new AVAssetReader(asset, out var error);
+
+            if (error is not null)
+                return null;
+
+            var output = new AVAssetReaderTrackOutput(track, (NSDictionary?)null)
+            {
+                AlwaysCopiesSampleData = false,
+            };
+
+            if (!reader.CanAddOutput(output))
+                return null;
+
+            reader.AddOutput(output);
+
+            if (!reader.StartReading())
+                return null;
+
+            var times = new List<TimeSpan>(4096);
+
+            while (!token.IsCancellationRequested)
+            {
+                using var sample = output.CopyNextSampleBuffer();
+
+                if (sample is null)
+                    break;
+
+                var presentation = sample.PresentationTimeStamp;
+
+                if (presentation.IsNumeric)
+                    times.Add(TimeSpan.FromSeconds(presentation.Seconds));
+            }
+
+            return times.Count > 0 && !token.IsCancellationRequested ? new FrameIndex(times) : null;
+        }
+        catch (Exception)
+        {
+            // A container the reader cannot walk is a source without an exact
+            // index, not a source that cannot be played.
+            return null;
+        }
+        finally
+        {
+            reader?.CancelReading();
+            reader?.Dispose();
+        }
+    }
+
     private static Size NaturalSizeOf(AVAssetTrack track)
     {
         var size = track.NaturalSize;
@@ -608,6 +729,11 @@ public class VideoPlayerViewHandler
                 // will not run backwards says so here, before an app offers a
                 // button for it.
                 Report?.OnReverseAvailabilityChanged(item.CanPlayReverse);
+
+                // Until the sample table has been read, frames are counted by
+                // the rate the container claims.
+                _frames = FrameClock.FromRate(_frameRate, duration);
+                _ = BuildFrameIndexAsync(item.Asset, duration, _generation);
 
                 Report?.OnMediaOpened(duration, _frameRate, _naturalSize, _timeline.ChapterDurations);
 
@@ -694,8 +820,11 @@ public class VideoPlayerViewHandler
         var (index, local) = _timeline.ToLocal(position);
 
         // AVFoundation shows the frame the position falls inside, so the frame
-        // on screen is simply the one this position belongs to.
-        Report?.OnPositionChanged(position, index, local, FrameMath.FrameIndexAt(position, _frameRate));
+        // on screen is the one this position belongs to — unless a step just
+        // put a known one there.
+        var frame = _displayedFrame ?? _frames.FrameAt(position);
+
+        Report?.OnPositionChanged(position, index, local, frame);
     }
 
     public void Play()
@@ -704,6 +833,7 @@ public class VideoPlayerViewHandler
             return;
 
         StartInsideRange(player);
+        _displayedFrame = null;
         ApplySpeed();
 
         // DefaultRate only applies from iOS 16; below it, playing at a rate
@@ -766,6 +896,7 @@ public class VideoPlayerViewHandler
 
         player.Pause();
         player.Seek(CMTime.Zero, CMTime.Zero, CMTime.Zero);
+        _displayedFrame = 0;
         ReportPosition(TimeSpan.Zero, force: true);
     }
 
@@ -773,6 +904,8 @@ public class VideoPlayerViewHandler
     {
         if (_player is not { } player || _item is null)
             return false;
+
+        _displayedFrame = null;
 
         var request = _seeks.Begin();
         var generation = request.Generation;
@@ -796,16 +929,24 @@ public class VideoPlayerViewHandler
         return reached;
     }
 
-    public Task<bool> SeekToFrameAsync(long frame, CancellationToken cancellationToken)
+    public async Task<bool> SeekToFrameAsync(long frame, CancellationToken cancellationToken)
     {
         if (_player is not { } player || _timeline is null)
-            return Task.FromResult(false);
+            return false;
 
         player.Pause();
 
-        return SeekExactAsync(
-            FrameMath.SeekTargetForFrame(frame, _frameRate, _timeline.Total, FrameSeekSemantics.Containing),
-            cancellationToken);
+        var wanted = _frames.ClampFrame(frame);
+        var reached = await SeekExactAsync(
+            _frames.SeekTarget(wanted, FrameSeekSemantics.Containing), cancellationToken)
+            .ConfigureAwait(true);
+
+        if (!reached)
+            return false;
+
+        _displayedFrame = wanted;
+        ReportPosition(_frames.FrameStart(wanted), force: true);
+        return true;
     }
 
     public async Task<bool> StepFrameAsync(int frames)
@@ -819,21 +960,24 @@ public class VideoPlayerViewHandler
         // but it refuses to cross the ends of the item, and AVFoundation does
         // not promise it for every codec. The seek is the fallback and the only
         // route that works across a chapter seam the stepper will not cross.
+        var position = TimeSpan.FromSeconds(player.CurrentTime.Seconds);
+        var current = _displayedFrame ?? _frames.FrameAt(position);
+        var wanted = _frames.ClampFrame(current + frames);
+
         var canStep = frames > 0 ? item.CanStepForward : item.CanStepBackward;
 
-        if (canStep && frames != 0)
+        if (canStep && frames != 0 && wanted != current)
         {
-            item.StepByCount(frames);
+            item.StepByCount((int)(wanted - current));
 
-            var stepped = TimeSpan.FromSeconds(player.CurrentTime.Seconds);
-            ReportPosition(stepped, force: true);
+            // Not CurrentTime: it is still catching up. The picture moved by
+            // the number of frames asked for, so that is what is on screen.
+            _displayedFrame = wanted;
+            ReportPosition(_frames.FrameStart(wanted), force: true);
             return true;
         }
 
-        var position = TimeSpan.FromSeconds(player.CurrentTime.Seconds);
-        var target = FrameMath.StepTarget(position, _frameRate, frames, _timeline.Total);
-
-        return await SeekExactAsync(target, CancellationToken.None).ConfigureAwait(true);
+        return await SeekToFrameAsync(wanted, CancellationToken.None).ConfigureAwait(true);
     }
 
     public Point? ToPicturePoint(Point viewPoint)
