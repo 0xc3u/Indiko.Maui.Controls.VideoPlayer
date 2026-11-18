@@ -1,4 +1,5 @@
 using AVFoundation;
+using CoreGraphics;
 using CoreMedia;
 using Foundation;
 using Indiko.Maui.Controls.VideoPlayer.Models;
@@ -24,6 +25,10 @@ public class VideoPlayerViewHandler
             [nameof(VideoPlayerView.IsMuted)] = MapVolume,
             [nameof(VideoPlayerView.Volume)] = MapVolume,
             [nameof(VideoPlayerView.ScalingMode)] = MapScalingMode,
+            [nameof(VideoPlayerView.ZoomFactor)] = MapZoom,
+            [nameof(VideoPlayerView.ZoomOffset)] = MapZoom,
+            [nameof(VideoPlayerView.MaximumZoom)] = MapZoom,
+            [nameof(VideoPlayerView.IsPinchToZoomEnabled)] = MapZoomGestures,
             [nameof(VideoPlayerView.PositionUpdateRate)] = MapPositionUpdateRate,
         };
 
@@ -43,6 +48,10 @@ public class VideoPlayerViewHandler
     private KeyPathObserver? _statusObserver;
     private KeyPathObserver? _timeControlObserver;
     private CancellationTokenSource? _loading;
+
+    private UIPinchGestureRecognizer? _pinch;
+    private UIPanGestureRecognizer? _drag;
+    private bool _reportingZoom;
 
     private ChapterTimeline? _timeline;
     private PositionThrottle _throttle = new(15);
@@ -67,6 +76,10 @@ public class VideoPlayerViewHandler
 
         _player = new AVPlayer();
         platformView.Player = _player;
+
+        // A new size means a new picture rectangle, and a pan that was at the
+        // edge of the old one is now either short of the new edge or past it.
+        platformView.DidLayout += OnPlatformLayout;
 
         _timeControlObserver = new KeyPathObserver(_player, "timeControlStatus", OnTimeControlStatusChanged);
 
@@ -94,6 +107,9 @@ public class VideoPlayerViewHandler
         _loading = null;
 
         _seeks.CancelPending();
+
+        platformView.DidLayout -= OnPlatformLayout;
+        RemoveZoomGestures(platformView);
 
         if (_player is { } player)
         {
@@ -182,7 +198,182 @@ public class VideoPlayerViewHandler
                 VideoScalingMode.Stretch => AVLayerVideoGravity.Resize,
                 _ => AVLayerVideoGravity.ResizeAspect,
             };
+
+            // Fit draws a letterboxed picture and Fill a cropped one, so the
+            // room there is to pan changed with the gravity.
+            handler.ApplyZoom();
         }
+    }
+
+    private static void MapZoom(VideoPlayerViewHandler handler, VideoPlayerView view) =>
+        handler.ApplyZoom();
+
+    private static void MapZoomGestures(VideoPlayerViewHandler handler, VideoPlayerView view)
+    {
+        if (handler.PlatformView is not { } platformView)
+            return;
+
+        if (view.IsPinchToZoomEnabled)
+            handler.AddZoomGestures(platformView);
+        else
+            handler.RemoveZoomGestures(platformView);
+    }
+
+    private void OnPlatformLayout(object? sender, EventArgs e) => ApplyZoom();
+
+    /// <summary>
+    /// Puts the view's zoom on the picture, clamped to what the picture holds,
+    /// and reports back whatever survived the clamp.
+    /// </summary>
+    private void ApplyZoom()
+    {
+        if (PlatformView is not { } platformView || VirtualView is not { } view)
+            return;
+
+        Apply(ZoomMath.Clamp(Requested(view), Measure(platformView), view.MaximumZoom));
+    }
+
+    private void Apply(ZoomState state)
+    {
+        if (PlatformView is not { } platformView)
+            return;
+
+        platformView.ApplyZoom(state.Factor, state.OffsetX, state.OffsetY);
+
+        // The view wrote the request; this is the answer. The guard is what
+        // stops that answer from coming back round as another request.
+        if (_reportingZoom)
+            return;
+
+        _reportingZoom = true;
+
+        try
+        {
+            Report?.OnZoomChanged(state.Factor, new Point(state.OffsetX, state.OffsetY));
+        }
+        finally
+        {
+            _reportingZoom = false;
+        }
+    }
+
+    private static ZoomState Requested(VideoPlayerView view) =>
+        new(view.ZoomFactor, view.ZoomOffset.X, view.ZoomOffset.Y);
+
+    private static ZoomBounds Measure(PlayerContainerView platformView)
+    {
+        var viewport = platformView.Bounds;
+        var content = platformView.ContentRect;
+
+        // Before the first frame there is no video rectangle to measure. The
+        // view's own size is the closest honest guess, and the next layout or
+        // the first frame corrects it.
+        if (content.IsEmpty)
+            content = viewport;
+
+        return new ZoomBounds(content.Width, content.Height, viewport.Width, viewport.Height);
+    }
+
+    private void AddZoomGestures(PlayerContainerView platformView)
+    {
+        if (_pinch is not null)
+            return;
+
+        _pinch = new UIPinchGestureRecognizer(OnPinch)
+        {
+            // The app may have its own recognisers on the player; claiming
+            // exclusivity would break them.
+            ShouldRecognizeSimultaneously = (_, _) => true,
+        };
+
+        _drag = new UIPanGestureRecognizer(OnDrag)
+        {
+            // One finger only: a pinch already moves the picture with the point
+            // between the fingers, and a second translation on top of that
+            // would move it twice as far as the hand.
+            MinimumNumberOfTouches = 1,
+            MaximumNumberOfTouches = 1,
+            ShouldRecognizeSimultaneously = (_, _) => true,
+
+            // Unmagnified there is nothing to pan, and a recogniser that began
+            // anyway would swallow the drag that scrolls the page the player
+            // sits on.
+            ShouldBegin = _ => CanPan(),
+        };
+
+        platformView.AddGestureRecognizer(_pinch);
+        platformView.AddGestureRecognizer(_drag);
+    }
+
+    private void RemoveZoomGestures(PlayerContainerView platformView)
+    {
+        if (_pinch is not null)
+        {
+            platformView.RemoveGestureRecognizer(_pinch);
+            _pinch.Dispose();
+            _pinch = null;
+        }
+
+        if (_drag is not null)
+        {
+            platformView.RemoveGestureRecognizer(_drag);
+            _drag.Dispose();
+            _drag = null;
+        }
+    }
+
+    private bool CanPan()
+    {
+        if (PlatformView is not { } platformView || VirtualView is not { } view)
+            return false;
+
+        var bounds = Measure(platformView);
+        var factor = view.ZoomFactor;
+
+        return ZoomMath.OffsetLimit(bounds.ContentWidth, bounds.ViewportWidth, factor) > 0 ||
+               ZoomMath.OffsetLimit(bounds.ContentHeight, bounds.ViewportHeight, factor) > 0;
+    }
+
+    private void OnPinch(UIPinchGestureRecognizer recognizer)
+    {
+        if (PlatformView is not { } platformView || VirtualView is not { } view)
+            return;
+
+        if (recognizer.State is not (UIGestureRecognizerState.Began or UIGestureRecognizerState.Changed))
+            return;
+
+        var focus = recognizer.LocationInView(platformView);
+        var bounds = platformView.Bounds;
+
+        var state = ZoomMath.ScaleBy(
+            Requested(view),
+            recognizer.Scale,
+            focus.X - bounds.GetMidX(),
+            focus.Y - bounds.GetMidY(),
+            Measure(platformView),
+            view.MaximumZoom);
+
+        // Scale is cumulative from the start of the gesture; resetting it turns
+        // it into the step since the last callback, which is what composes with
+        // a factor the app may have changed underneath.
+        recognizer.Scale = 1;
+
+        Apply(state);
+    }
+
+    private void OnDrag(UIPanGestureRecognizer recognizer)
+    {
+        if (PlatformView is not { } platformView || VirtualView is not { } view)
+            return;
+
+        if (recognizer.State is not (UIGestureRecognizerState.Began or UIGestureRecognizerState.Changed))
+            return;
+
+        var moved = recognizer.TranslationInView(platformView);
+        recognizer.SetTranslation(CGPoint.Empty, platformView);
+
+        Apply(ZoomMath.PanBy(
+            Requested(view), moved.X, moved.Y, Measure(platformView), view.MaximumZoom));
     }
 
     private static void MapPositionUpdateRate(VideoPlayerViewHandler handler, VideoPlayerView view) =>
@@ -378,6 +569,10 @@ public class VideoPlayerViewHandler
                     : _timeline.Total;
 
                 Report?.OnMediaOpened(duration, _frameRate, _naturalSize, _timeline.ChapterDurations);
+
+                // The video rectangle only exists once there is a frame, so a
+                // zoom set before this was clamped against the view's size.
+                ApplyZoom();
                 Report?.OnStateChanged(
                     _player?.Rate != 0 ? VideoPlayerState.Playing : VideoPlayerState.Ready);
                 break;

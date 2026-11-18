@@ -1,8 +1,9 @@
 # Indiko.Maui.Controls.VideoPlayer
 
 A native video control for .NET MAUI built for *analysing* footage rather than
-watching it: frame-accurate seeking, frame-by-frame stepping, slow motion, and
-position events fast enough to drive a map or a timeline alongside the picture.
+watching it: frame-accurate seeking, frame-by-frame stepping, slow motion,
+magnification of the frame on screen, and position events fast enough to drive
+a map or a timeline alongside the picture.
 
 It draws no playback controls of its own. The app builds those, because an app
 that steps through frames needs a transport bar that a system player will not
@@ -187,6 +188,55 @@ seek asked for rather than the frame it displays, so the Android handler tracks
 the frame on screen and reports that frame's start — otherwise a frame counter
 driven from `Position` disagrees with what the viewer can read.
 
+## Zoom
+
+`ZoomFactor` magnifies the picture, from 1 — the whole picture, as
+`ScalingMode` presents it — up to `MaximumZoom`, four by default and at most
+sixteen. There is deliberately nothing below 1: zooming out past the fitted
+picture would only letterbox a letterbox.
+
+```csharp
+player.ZoomTo(4);               // about the middle, keeping what is in it there
+player.ZoomFactor = 2;          // or set it directly; values outside are clamped
+player.ResetZoom();             // back to the whole picture, centred
+```
+
+What is magnified is the decoded frame, not the drawn one, so up to the
+resolution of the footage the digits in a burnt-in frame number get *sharper*
+rather than blockier — which is the point of having it in a control meant for
+reading detail out of a frame.
+
+`ZoomOffset` moves the magnified picture, in device-independent units, and is
+clamped to the picture's own edges: a magnified frame can never show black
+beside it, and at factor 1 the offset is always `Point.Zero` because there is
+nowhere to go. The handler writes the clamped value back, so the property is
+what is actually on screen rather than what was asked for. `ZoomChanged`
+reports both, whoever changed them.
+
+### Gestures
+
+`IsPinchToZoomEnabled` is **off by default**, like every other interaction: the
+control draws no controls and claims no gestures unless asked, so an app's own
+recognisers on the player keep working. Turn it on and a pinch magnifies about
+the point between the fingers — whatever is under them stays under them — and a
+one-finger drag pans, but only once there is something to pan. Unmagnified, a
+drag across the picture still scrolls the page the player sits on.
+
+### What this costs on Android
+
+Media3's `PlayerView` draws into a `SurfaceView` by default, which is
+composited outside the view hierarchy: a transform on it moves the hole in the
+window rather than reliably the picture in it, and clipping is the window's
+business rather than the parent view's. This control therefore inflates its
+player view from a layout that asks for a `TextureView`, which draws like any
+other view, so magnifying is an ordinary transform and the player view clips
+it. A `TextureView` costs a little more to draw. That is the price of a zoom
+that behaves the same on every device, and it is paid whether or not an app
+uses the zoom.
+
+iOS needs no such trade: the player layer backs an inner view that carries the
+transform, inside a clipping container.
+
 ## API
 
 ### Properties
@@ -199,6 +249,10 @@ driven from `Position` disagrees with what the viewer can read.
 | `IsMuted` | `bool` | `false` | |
 | `IsLooping` | `bool` | `false` | |
 | `ScalingMode` | `VideoScalingMode` | `Fit` | `Fit`, `Fill`, `Stretch` |
+| `ZoomFactor` | `double` | `1.0` | clamped to 1–`MaximumZoom`, two-way |
+| `ZoomOffset` | `Point` | `Zero` | clamped to the picture's edges, two-way |
+| `MaximumZoom` | `double` | `4.0` | clamped to 1–16 |
+| `IsPinchToZoomEnabled` | `bool` | `false` | pinch to magnify, drag to pan |
 | `PositionUpdateRate` | `int` | `15` | Hz, clamped to 10–30 |
 | `AutoPlay` | `bool` | `false` | play once open |
 | `PauseWhenInBackground` | `bool` | `true` | never resumes by itself |
@@ -218,6 +272,8 @@ Read-only: `Position`, `Duration`, `State`, `IsPlaying`, `FrameRate`,
 | `Task<bool> SeekExactAsync(TimeSpan, CancellationToken = default)` | `false` when overtaken or cancelled |
 | `Task<bool> StepFrameAsync(int frames)` | pauses first, crosses chapters |
 | `BeginScrub()` `ScrubTo(TimeSpan)` `EndScrub()` | fast while dragging, exact on release |
+| `ZoomTo(double factor)` | magnifies about the middle, carrying the pan with it |
+| `ResetZoom()` | back to the whole picture, centred |
 
 All of them must be called on the main thread; both native players require it,
 and the control says so with an `InvalidOperationException` rather than letting
@@ -237,6 +293,7 @@ wrong.
 | `MediaOpened` | duration, frame rate, size, chapter durations |
 | `MediaFailed` | error code, chapter, message |
 | `PlaybackEnded` `StateChanged` | |
+| `ZoomChanged` | factor and clamped offset, from a pinch or from the app |
 | `BookmarkRefreshed` | iOS, store the renewed bookmark |
 | `DownloadProgress` | iOS, iCloud download, 0–1 |
 
@@ -312,8 +369,8 @@ numbered frames with ImageMagick instead. Nothing it writes is committed.
 
 `samples/Indiko.Maui.Controls.VideoPlayer.Sample` exercises every part of the
 API and shows the numbers needed to check the claims: position, duration,
-chapter, frame rate, size, the frame number expected on screen, and the
-measured event rate. Generate the footage first:
+chapter, frame rate, size, the frame number expected on screen, the magnification
+and pan, and the measured event rate. Generate the footage first:
 
 ```sh
 scripts/make-test-videos.sh --quick --install-sample

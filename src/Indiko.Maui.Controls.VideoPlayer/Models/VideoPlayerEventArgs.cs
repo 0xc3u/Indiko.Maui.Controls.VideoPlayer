@@ -60,6 +60,19 @@ public sealed class VideoStateChangedEventArgs(VideoPlayerState oldState, VideoP
     public VideoPlayerState NewState { get; } = newState;
 }
 
+/// <summary>The magnification or the pan of the picture changed.</summary>
+public sealed class VideoZoomChangedEventArgs(double factor, Point offset) : EventArgs
+{
+    /// <summary>How much the picture is magnified; 1 is the whole picture.</summary>
+    public double Factor { get; } = factor;
+
+    /// <summary>
+    /// How far the picture is moved from the centre, in device-independent
+    /// units, after clamping to its own edges.
+    /// </summary>
+    public Point Offset { get; } = offset;
+}
+
 /// <summary>
 /// iOS: a security-scoped bookmark had gone stale and was renewed. The app
 /// should store <see cref="NewBookmark"/> in place of the one it passed in, or

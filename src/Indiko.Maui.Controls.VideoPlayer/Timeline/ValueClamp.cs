@@ -36,6 +36,43 @@ public static class ValueClamp
         return Math.Clamp(volume, 0d, 1d);
     }
 
+    /// <summary>No magnification: the whole picture, as the scaling mode presents it.</summary>
+    public const double MinimumZoom = 1.0;
+
+    /// <summary>
+    /// The highest ceiling an app may set. Past this a frame is mostly the
+    /// decoder's interpolation rather than anything that was filmed.
+    /// </summary>
+    public const double MaximumZoomCeiling = 16.0;
+
+    /// <summary>The default ceiling: enough to read a number burnt into a frame.</summary>
+    public const double DefaultMaximumZoom = 4.0;
+
+    /// <summary>
+    /// Clamps the ceiling an app sets to 1–16; a value that is not a number
+    /// falls back to the default.
+    /// </summary>
+    public static double MaximumZoom(double maximum)
+    {
+        if (!double.IsFinite(maximum))
+            return DefaultMaximumZoom;
+
+        return Math.Clamp(maximum, MinimumZoom, MaximumZoomCeiling);
+    }
+
+    /// <summary>
+    /// Clamps a magnification to between the whole picture and the app's own
+    /// ceiling. There is deliberately nothing below 1: zooming out past the
+    /// fitted picture would letterbox a letterbox.
+    /// </summary>
+    public static double Zoom(double factor, double maximum)
+    {
+        if (!double.IsFinite(factor))
+            return MinimumZoom;
+
+        return Math.Clamp(factor, MinimumZoom, MaximumZoom(maximum));
+    }
+
     /// <summary>Clamps a position-event rate to 10–30 Hz.</summary>
     public static int PositionUpdateRate(int rateHz) =>
         Math.Clamp(rateHz, PositionThrottle.MinimumRateHz, PositionThrottle.MaximumRateHz);

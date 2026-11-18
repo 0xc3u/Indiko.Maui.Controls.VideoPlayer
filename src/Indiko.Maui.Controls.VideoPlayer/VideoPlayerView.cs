@@ -30,6 +30,26 @@ public class VideoPlayerView : View, IVideoPlayerViewController
     public static readonly BindableProperty ScalingModeProperty = BindableProperty.Create(
         nameof(ScalingMode), typeof(VideoScalingMode), typeof(VideoPlayerView), VideoScalingMode.Fit);
 
+    public static readonly BindableProperty ZoomFactorProperty = BindableProperty.Create(
+        nameof(ZoomFactor), typeof(double), typeof(VideoPlayerView), 1d, BindingMode.TwoWay,
+        coerceValue: (bindable, value) =>
+            ValueClamp.Zoom((double)value!, ((VideoPlayerView)bindable).MaximumZoom),
+        propertyChanged: OnZoomPropertyChanged);
+
+    public static readonly BindableProperty ZoomOffsetProperty = BindableProperty.Create(
+        nameof(ZoomOffset), typeof(Point), typeof(VideoPlayerView), Point.Zero, BindingMode.TwoWay,
+        propertyChanged: OnZoomPropertyChanged);
+
+    public static readonly BindableProperty MaximumZoomProperty = BindableProperty.Create(
+        nameof(MaximumZoom), typeof(double), typeof(VideoPlayerView), ValueClamp.DefaultMaximumZoom,
+        coerceValue: (_, value) => ValueClamp.MaximumZoom((double)value!),
+        // Lowering the ceiling has to pull the current factor down with it,
+        // otherwise the picture stays magnified past what the app now allows.
+        propertyChanged: (bindable, _, _) => bindable.CoerceValue(ZoomFactorProperty));
+
+    public static readonly BindableProperty IsPinchToZoomEnabledProperty = BindableProperty.Create(
+        nameof(IsPinchToZoomEnabled), typeof(bool), typeof(VideoPlayerView), false);
+
     public static readonly BindableProperty PositionUpdateRateProperty = BindableProperty.Create(
         nameof(PositionUpdateRate), typeof(int), typeof(VideoPlayerView), 15,
         coerceValue: (_, value) => ValueClamp.PositionUpdateRate((int)value!));
@@ -114,6 +134,65 @@ public class VideoPlayerView : View, IVideoPlayerViewController
     {
         get => (VideoScalingMode)GetValue(ScalingModeProperty);
         set => SetValue(ScalingModeProperty, value);
+    }
+
+    /// <summary>
+    /// How much the picture is magnified, from 1 (the whole picture, as
+    /// <see cref="ScalingMode"/> presents it) up to <see cref="MaximumZoom"/>.
+    /// Values outside that are clamped.
+    /// </summary>
+    /// <remarks>
+    /// Magnifying samples the decoded frame, so it shows detail the control was
+    /// too small to draw rather than enlarged pixels — up to the resolution of
+    /// the footage. A pinch writes back here, which is why the default binding
+    /// mode is two-way: a view model binding follows the user's fingers.
+    /// </remarks>
+    public double ZoomFactor
+    {
+        get => (double)GetValue(ZoomFactorProperty);
+        set => SetValue(ZoomFactorProperty, value);
+    }
+
+    /// <summary>
+    /// How far the magnified picture is moved from the centre, in device-
+    /// independent units: positive X to the right, positive Y down.
+    /// </summary>
+    /// <remarks>
+    /// Clamped by the handler to the edges of the picture, so it can never show
+    /// black beside a magnified frame, and written back with whatever survived
+    /// that clamp. At <see cref="ZoomFactor"/> 1 there is nowhere to go and this
+    /// is always <see cref="Point.Zero"/>.
+    /// </remarks>
+    public Point ZoomOffset
+    {
+        get => (Point)GetValue(ZoomOffsetProperty);
+        set => SetValue(ZoomOffsetProperty, value);
+    }
+
+    /// <summary>
+    /// The highest <see cref="ZoomFactor"/> the app allows, 1 to 16. Four by
+    /// default, which is enough to read a number burnt into a frame.
+    /// </summary>
+    public double MaximumZoom
+    {
+        get => (double)GetValue(MaximumZoomProperty);
+        set => SetValue(MaximumZoomProperty, value);
+    }
+
+    /// <summary>
+    /// Whether the user may pinch to magnify and drag to pan the picture.
+    /// </summary>
+    /// <remarks>
+    /// Off by default, like every other interaction: the control draws no
+    /// controls and claims no gestures unless asked, so that an app's own
+    /// recognisers on the player keep working. While it is on, a drag over the
+    /// picture pans instead of scrolling the page, but only once there is
+    /// something to pan — unmagnified, touches pass straight through.
+    /// </remarks>
+    public bool IsPinchToZoomEnabled
+    {
+        get => (bool)GetValue(IsPinchToZoomEnabledProperty);
+        set => SetValue(IsPinchToZoomEnabledProperty, value);
     }
 
     /// <summary>
@@ -221,6 +300,12 @@ public class VideoPlayerView : View, IVideoPlayerViewController
 
     public event EventHandler<VideoStateChangedEventArgs>? StateChanged;
 
+    /// <summary>
+    /// The magnification or the pan changed, whether from a pinch or from the
+    /// app setting it.
+    /// </summary>
+    public event EventHandler<VideoZoomChangedEventArgs>? ZoomChanged;
+
     /// <summary>iOS: a stale bookmark was renewed and should be stored by the app.</summary>
     public event EventHandler<VideoBookmarkRefreshedEventArgs>? BookmarkRefreshed;
 
@@ -277,6 +362,36 @@ public class VideoPlayerView : View, IVideoPlayerViewController
     {
         VerifyMainThread();
         return Controller is { } controller ? controller.StepFrameAsync(frames) : Task.FromResult(false);
+    }
+
+    /// <summary>
+    /// Magnifies about the middle of the control, so whatever is in the middle
+    /// stays there, and carries the current pan with the factor.
+    /// </summary>
+    /// <remarks>
+    /// Needs no player and no loaded source: it is a property change, which is
+    /// why it is safe to call before anything is open.
+    /// </remarks>
+    public void ZoomTo(double factor)
+    {
+        VerifyMainThread();
+
+        var next = ZoomMath.ScaleAboutCentre(
+            new ZoomState(ZoomFactor, ZoomOffset.X, ZoomOffset.Y), factor, MaximumZoom);
+
+        // The factor last, so the pan it belongs to is already in place when the
+        // handler measures the room it has.
+        ZoomOffset = new Point(next.OffsetX, next.OffsetY);
+        ZoomFactor = next.Factor;
+    }
+
+    /// <summary>Returns to the whole picture, centred.</summary>
+    public void ResetZoom()
+    {
+        VerifyMainThread();
+
+        ZoomFactor = 1d;
+        ZoomOffset = Point.Zero;
     }
 
     /// <summary>
@@ -342,6 +457,24 @@ public class VideoPlayerView : View, IVideoPlayerViewController
         IsPlaying = state == VideoPlayerState.Playing;
 
         StateChanged?.Invoke(this, new VideoStateChangedEventArgs(previous, state));
+    }
+
+    void IVideoPlayerViewController.OnZoomChanged(double factor, Point offset)
+    {
+        // Straight onto the properties: the coercion clamps the factor and the
+        // ZoomChanged event follows from the property change, so a pinch and an
+        // app setting a factor are reported through exactly one path.
+        ZoomOffset = offset;
+        ZoomFactor = factor;
+    }
+
+    private static void OnZoomPropertyChanged(BindableObject bindable, object oldValue, object newValue)
+    {
+        if (!Equals(oldValue, newValue) && bindable is VideoPlayerView view)
+        {
+            view.ZoomChanged?.Invoke(
+                view, new VideoZoomChangedEventArgs(view.ZoomFactor, view.ZoomOffset));
+        }
     }
 
     void IVideoPlayerViewController.OnBookmarkRefreshed(int chapterIndex, string newBookmark)

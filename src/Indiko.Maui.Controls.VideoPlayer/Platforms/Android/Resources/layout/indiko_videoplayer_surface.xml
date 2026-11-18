@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The only reason this layout exists is surface_type. Media3's PlayerView reads
+  it in its constructor and offers no setter, and the default — a SurfaceView —
+  is composited outside the view hierarchy, where a scale on an ancestor moves
+  the hole but not reliably the picture in it, and clipping is the window's
+  business rather than the parent view's. A TextureView draws into the hierarchy
+  like any other view, so magnifying it is an ordinary transform and the
+  PlayerView clips it for free. It costs a little more to draw, which is the
+  price of a zoom that behaves the same on every device.
+-->
+<indiko.maui.controls.videoplayer.ZoomablePlayerView
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    app:surface_type="texture_view"
+    app:use_controller="false" />

@@ -47,6 +47,8 @@ internal interface IVideoPlayerViewController
 
     void OnStateChanged(VideoPlayerState state);
 
+    void OnZoomChanged(double factor, Point offset);
+
     void OnBookmarkRefreshed(int chapterIndex, string newBookmark);
 
     void OnDownloadProgress(int chapterIndex, double progress);

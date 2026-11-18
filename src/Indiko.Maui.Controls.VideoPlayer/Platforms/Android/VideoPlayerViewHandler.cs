@@ -29,6 +29,10 @@ public partial class VideoPlayerViewHandler
             [nameof(VideoPlayerView.Volume)] = MapVolume,
             [nameof(VideoPlayerView.IsLooping)] = MapLooping,
             [nameof(VideoPlayerView.ScalingMode)] = MapScalingMode,
+            [nameof(VideoPlayerView.ZoomFactor)] = MapZoom,
+            [nameof(VideoPlayerView.ZoomOffset)] = MapZoom,
+            [nameof(VideoPlayerView.MaximumZoom)] = MapZoom,
+            [nameof(VideoPlayerView.IsPinchToZoomEnabled)] = MapZoomGestures,
             [nameof(VideoPlayerView.PositionUpdateRate)] = MapPositionUpdateRate,
         };
 
@@ -62,12 +66,15 @@ public partial class VideoPlayerViewHandler
 
     protected override PlayerView CreatePlatformView()
     {
-        var view = new PlayerView(Context)
-        {
-            // The app builds its own controls; Media3's would fight with them
-            // and cover the picture the user is trying to read frame numbers off.
-            UseController = false,
-        };
+        // Inflated rather than constructed because the surface type can only be
+        // set from a layout attribute, and a TextureView is what makes the zoom
+        // behave the same on every device. See the layout for the detail.
+        var view = (PlayerView)global::Android.Views.LayoutInflater.From(Context)!
+            .Inflate(Resource.Layout.indiko_videoplayer_surface, null)!;
+
+        // The app builds its own controls; Media3's would fight with them and
+        // cover the picture the user is trying to read frame numbers off.
+        view.UseController = false;
 
         view.SetShutterBackgroundColor(global::Android.Graphics.Color.Black);
         return view;
@@ -93,6 +100,14 @@ public partial class VideoPlayerViewHandler
         _ticker = new Handler(Looper.MainLooper!);
         _tick = OnTick;
 
+        // A new size means a new picture rectangle, and a pan that was at the
+        // edge of the old one is now either short of the new edge or past it.
+        // The content frame rather than the player view: it is laid out
+        // whenever the player view is, and also on its own when a clip of a
+        // different shape changes the letterboxing.
+        _zoomLayoutSource = ZoomLayoutSource(platformView);
+        _zoomLayoutSource.LayoutChange += OnPlatformLayout;
+
         // Leaving the app pauses, and nothing resumes by itself: the control
         // runs no media session and no foreground service, so continuing would
         // be audio the user cannot see or stop.
@@ -102,6 +117,14 @@ public partial class VideoPlayerViewHandler
     protected override void DisconnectHandler(PlayerView platformView)
     {
         Microsoft.Maui.ApplicationModel.Platform.ActivityStateChanged -= OnActivityStateChanged;
+
+        if (_zoomLayoutSource is not null)
+        {
+            _zoomLayoutSource.LayoutChange -= OnPlatformLayout;
+            _zoomLayoutSource = null;
+        }
+
+        ReleaseZoomGestures();
 
         StopTicker();
 
@@ -174,6 +197,10 @@ public partial class VideoPlayerViewHandler
             VideoScalingMode.Stretch => AspectRatioFrameLayout.ResizeModeFill,
             _ => AspectRatioFrameLayout.ResizeModeFit,
         };
+
+        // Fit draws a letterboxed picture and Fill a cropped one, so the room
+        // there is to pan changed with the resize mode.
+        handler.ApplyZoom();
     }
 
     private static void MapPositionUpdateRate(VideoPlayerViewHandler handler, VideoPlayerView view) =>
@@ -501,5 +528,9 @@ public partial class VideoPlayerViewHandler
 
         Report?.OnMediaOpened(duration, _frameRate, size, _timeline.ChapterDurations);
         Report?.OnStateChanged(player.IsPlaying ? VideoPlayerState.Playing : VideoPlayerState.Ready);
+
+        // Also called when the video size changes, which is when the picture
+        // rectangle a zoom is clamped against changes shape.
+        ApplyZoom();
     }
 }

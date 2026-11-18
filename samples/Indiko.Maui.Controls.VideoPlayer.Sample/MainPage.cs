@@ -21,6 +21,7 @@ public class MainPage : ContentPage
 
     private static readonly double[] Speeds = [0.25, 0.5, 1, 2];
     private static readonly int[] Rates = [10, 15, 30];
+    private static readonly double[] Zooms = [1, 2, 4, 8];
 
     private readonly VideoPlayerView _player;
     private readonly IVideoPicker _picker = VideoPickerFactory.Create();
@@ -50,7 +51,11 @@ public class MainPage : ContentPage
 
     private readonly Button[] _speedButtons = new Button[Speeds.Length];
     private readonly Button[] _rateButtons = new Button[Rates.Length];
+    private readonly Button[] _zoomButtons = new Button[Zooms.Length];
     private readonly Entry _seekEntry;
+
+    private readonly Label _zoomReadout = Numeric(13, Type.Mono, text: "1.00×");
+    private Button? _pinchButton;
 
     private readonly Label _empty = new()
     {
@@ -77,6 +82,16 @@ public class MainPage : ContentPage
         {
             ScalingMode = VideoScalingMode.Fit,
             PositionUpdateRate = 15,
+
+            // Eight rather than the default four: the burnt-in frame number is
+            // small on a phone, and this is the page for finding out where the
+            // magnification stops being worth anything.
+            MaximumZoom = 8,
+
+            // The control claims no gestures unless asked. Here they are asked
+            // for, which also puts the cooperation with the page's own
+            // scrolling under test.
+            IsPinchToZoomEnabled = true,
         };
 
         _player.MediaOpened += OnMediaOpened;
@@ -90,6 +105,7 @@ public class MainPage : ContentPage
             Say($"Renewed and stored the bookmark for chapter {e.ChapterIndex + 1}.");
         };
         _player.DownloadProgress += (_, e) => Say($"Downloading from iCloud, {e.Progress:P0}.");
+        _player.ZoomChanged += (_, _) => SyncZoom();
 
         _timelineView = new GraphicsView
         {
@@ -148,6 +164,8 @@ public class MainPage : ContentPage
                     Hairline(),
                     Section("Playback", SpeedAndRate()),
                     Hairline(),
+                    Section("Zoom", ZoomControls()),
+                    Hairline(),
                     Section("Source", SourceControls()),
                     Hairline(),
                     Section("Failure modes", FailureControls()),
@@ -159,6 +177,8 @@ public class MainPage : ContentPage
 
         SyncSpeed();
         SyncRate();
+        SyncZoom();
+        SyncPinch();
     }
 
     protected override void OnDisappearing()
@@ -342,6 +362,58 @@ public class MainPage : ContentPage
         return stack;
     }
 
+    private View ZoomControls()
+    {
+        var stack = new VerticalStackLayout { Spacing = 14 };
+
+        var factors = Group("Zoom");
+        for (var i = 0; i < Zooms.Length; i++)
+        {
+            var factor = Zooms[i];
+            _zoomButtons[i] = Segment(FormatZoom(factor), () =>
+            {
+                _player.ZoomTo(factor);
+                Say(factor > 1
+                    ? "Magnified about the middle. Drag the picture to move it."
+                    : "Back to the whole picture.");
+                return Task.CompletedTask;
+            });
+
+            // The speed row carries the same labels, so the two are told apart
+            // here rather than by which heading they happen to sit under.
+            SemanticProperties.SetDescription(_zoomButtons[i], $"Magnify {FormatZoom(factor)}");
+            factors.Add(_zoomButtons[i]);
+        }
+
+        stack.Children.Add(Labelled("Magnification", factors));
+
+        var steps = Group("Steps");
+        steps.Add(Action("Zoom out", () => { Nudge(1 / 1.5); return Task.CompletedTask; }));
+        steps.Add(Action("Zoom in", () => { Nudge(1.5); return Task.CompletedTask; }));
+        steps.Add(Action("Reset", () => { _player.ResetZoom(); Say("Reset to the whole picture."); return Task.CompletedTask; }));
+        stack.Children.Add(Labelled("A step at a time, about the middle", steps));
+
+        var gestures = Group("Gestures");
+        _pinchButton = Action("Pinch to zoom", () =>
+        {
+            _player.IsPinchToZoomEnabled = !_player.IsPinchToZoomEnabled;
+            SyncPinch();
+            Say(_player.IsPinchToZoomEnabled
+                ? "Pinch the picture to magnify, drag it to pan. Scrolling the page still works."
+                : "Gestures off. The picture ignores touches again.");
+            return Task.CompletedTask;
+        });
+        gestures.Add(_pinchButton);
+        stack.Children.Add(Labelled("Off by default in the control; on here", gestures));
+
+        stack.Children.Add(Detail(
+            "The frame number is burnt into the picture. Magnify it and the digits get "
+            + "sharper rather than blockier, up to the resolution of the footage, because "
+            + "what is enlarged is the decoded frame and not the drawn one."));
+
+        return stack;
+    }
+
     private View SourceControls()
     {
         var stack = new VerticalStackLayout { Spacing = 14 };
@@ -410,6 +482,7 @@ public class MainPage : ContentPage
             Reading("State", _state),
             Reading("Media", _format),
             Reading("Event rate", _events),
+            Reading("Zoom", _zoomReadout),
         },
     };
 
@@ -552,6 +625,26 @@ public class MainPage : ContentPage
             Mark(_rateButtons[i], _player.PositionUpdateRate == Rates[i]);
     }
 
+    // The readout is the point of the section: a pinch writes back to the same
+    // properties the buttons set, and this is where that can be watched.
+    private void SyncZoom()
+    {
+        var offset = _player.ZoomOffset;
+
+        _zoomReadout.Text = _player.ZoomFactor > 1.0001
+            ? $"{_player.ZoomFactor:0.00}×   offset {offset.X:0;-0;0}, {offset.Y:0;-0;0}"
+            : $"{_player.ZoomFactor:0.00}×   whole picture";
+
+        for (var i = 0; i < _zoomButtons.Length; i++)
+            Mark(_zoomButtons[i], Math.Abs(_player.ZoomFactor - Zooms[i]) < 0.001);
+    }
+
+    private void SyncPinch()
+    {
+        if (_pinchButton is not null)
+            Mark(_pinchButton, _player.IsPinchToZoomEnabled);
+    }
+
     // Red marks what is live. It is the only thing on the page allowed to use
     // it, which is what keeps it meaning something.
     private static void Mark(Button button, bool active)
@@ -565,6 +658,15 @@ public class MainPage : ContentPage
 
     private static string FormatSpeed(double speed) =>
         speed == Math.Floor(speed) ? $"{speed:0}×" : $"{speed:0.##}×";
+
+    private static string FormatZoom(double factor) =>
+        factor == Math.Floor(factor) ? $"{factor:0}×" : $"{factor:0.##}×";
+
+    private void Nudge(double by)
+    {
+        _player.ZoomTo(_player.ZoomFactor * by);
+        Say($"Magnification {_player.ZoomFactor:0.##}× of at most {_player.MaximumZoom:0.##}×.");
+    }
 
     private static string Timecode(TimeSpan position, double frameRate)
     {
