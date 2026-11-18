@@ -1,3 +1,10 @@
+# [1.2.0](https://github.com/0xc3u/Indiko.Maui.Controls.VideoPlayer/compare/v1.1.0...v1.2.0) (2026-11-18)
+
+### Features
+
+* magnify the picture, by property or by pinch ([d6d26cb](https://github.com/0xc3u/Indiko.Maui.Controls.VideoPlayer/commit/d6d26cb0a93d4fb84bac61b3479260e30b65a1b2))
+
+
 # [1.1.0](https://github.com/0xc3u/Indiko.Maui.Controls.VideoPlayer/compare/v1.0.0...v1.1.0) (2026-11-17)
 
 ### Features
