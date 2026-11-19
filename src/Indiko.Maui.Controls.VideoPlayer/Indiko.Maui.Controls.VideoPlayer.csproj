@@ -64,18 +64,23 @@
 	</ItemGroup>
 
 	<!--
-	  Media3 1.8.0 rather than the newest 1.11.1: from 1.9 onwards Media3 depends
-	  on AndroidX Lifecycle 2.11 and Collection 1.6, which sit outside the
-	  constraints of the Lifecycle 2.9 packages that MAUI 10.0.110 brings. That
-	  mix builds, but it emits 18-21 NU1608 warnings in every consuming app and
-	  leaves the AndroidX graph resolved against versions no one chose. 1.8.0
-	  resolves cleanly (zero NU1605/NU1608) and is also the release that added
-	  scrubbing mode, which this control uses. Raise it when MAUI's own graph
-	  moves to Lifecycle 2.11.
+	  Media3 1.9.0 rather than the newest 1.11.1: from the 1.9.0.1 rebuild
+	  onwards Media3 depends on AndroidX Lifecycle 2.11 and Collection 1.6,
+	  which sit outside the constraints of the Lifecycle 2.9 packages that MAUI
+	  10.0.110 brings. That mix builds, but it emits 18-21 NU1608 warnings in
+	  every consuming app and leaves the AndroidX graph resolved against
+	  versions no one chose. 1.9.0 is the last release that resolves cleanly
+	  (zero NU1605/NU1608, Lifecycle 2.9.2.1 and Collection 1.5.0.3, the same
+	  graph as 1.8.0) and it carries the scrubbing-mode fixes this control
+	  wants: no crash when a seek crosses into another item while scrubbing,
+	  which is every chaptered recording, and forward seeks within a group of
+	  pictures no longer reset to the keyframe. Measured, not assumed - each
+	  version from 1.9.0 to 1.11.1 was restored and counted. Raise it when
+	  MAUI's own graph moves to Lifecycle 2.11.
 	-->
 	<ItemGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android'">
-		<PackageReference Include="Xamarin.AndroidX.Media3.ExoPlayer" Version="1.8.0" />
-		<PackageReference Include="Xamarin.AndroidX.Media3.UI" Version="1.8.0" />
+		<PackageReference Include="Xamarin.AndroidX.Media3.ExoPlayer" Version="1.9.0" />
+		<PackageReference Include="Xamarin.AndroidX.Media3.UI" Version="1.9.0" />
 	</ItemGroup>
 
 </Project>
