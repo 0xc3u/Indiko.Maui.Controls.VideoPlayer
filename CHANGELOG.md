@@ -1,3 +1,10 @@
+## [1.3.1](https://github.com/0xc3u/Indiko.Maui.Controls.VideoPlayer/compare/v1.3.0...v1.3.1) (2026-11-19)
+
+### Bug Fixes
+
+* **android:** Media3 auf 1.9.0 ([79f964f](https://github.com/0xc3u/Indiko.Maui.Controls.VideoPlayer/commit/79f964f2097d5e5f1ee0397ca74bef0bb4b16b86))
+
+
 # [1.3.0](https://github.com/0xc3u/Indiko.Maui.Controls.VideoPlayer/compare/v1.2.0...v1.3.0) (2026-11-18)
 
 ### Features
